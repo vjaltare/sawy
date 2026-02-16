@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "trident_playground"
+name = "trident"
 version = "0.1.0"
-description = "Playground for trident framework"
+description = "Trident: Quantization for CIM accelerators"
 authors = [{ name = "Vikrant Jaltare", email = "vjaltare@ucsd.edu" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/models"]
+packages = ["src/models"] 
