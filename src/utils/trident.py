@@ -11,7 +11,7 @@ def ternary_activation(x, thresholds, noise_sd, key):
     """
     Ternary activation function
     """
-    # key, key2 = jax.random.split(key, 2)
+    key, key2 = jax.random.split(key, 2)
 
     # generate noise
     noise = jax.random.normal(key = key, shape = x.shape) * noise_sd
