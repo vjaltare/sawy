@@ -1,7 +1,7 @@
 """
 Testing out the ternary resNet like network with ternary stochastic activation on CIFAR-10 dataset.
 
-Created on: 02/19/2024
+Created on: 02/24/2024
 """
 
 import argparse
@@ -126,46 +126,11 @@ def save_payload(state, configs, filename):
 # -------------------------------------------------------------------
 # Residual Block: outputs shape (2048)
 # -------------------------------------------------------------------
-class ResidualBlock(nnx.Module):
-    """
-    Residual block with two convolutional layers and a residual connection.
-    Order of operations:
-    input -> conv -> relu -> conv + input -> relu
-
-    TODO: Change call signature to include the TernaryStochasticActivation module instead of activation function.
-    """
-
-    def __init__(self,
-                 kernel_size: tuple[int, int],
-                 in_features: int,
-                 out_features: int,
-                #  stride: tuple[int, int],
-                 rngs: nnx.Rngs,
-                 padding: str = "SAME",
-                 activation_fn: Callable = nnx.relu,
-                 **kwargs):
-        
-        self.conv1 = nnx.Conv(in_features=in_features, out_features=out_features, kernel_size=kernel_size, padding=padding, rngs=rngs)
-        self.conv2 = nnx.Conv(in_features=out_features, out_features=out_features, kernel_size=kernel_size, padding=padding, rngs=rngs)
-        self.batch_norm = nnx.BatchNorm(out_features, rngs=rngs)
-        self.activation_fn = activation_fn
-
-    def __call__(self, x):
-        x_res = x
-        x = self.batch_norm(x)
-        x = self.conv1(x)
-        x = self.batch_norm(x)
-        x = self.activation_fn(x)
-        x = self.conv2(x)
-        x = x + x_res
-        x = self.activation_fn(x)
-        return x
-    
 class AdaptiveResidualBlock(nnx.Module):
     """
     Residual block with two convolutional layers and a residual connection.
     Order of operations:
-    input -> conv -> relu -> conv + input -> relu
+    normalize -> activation -> convolution
 
     TODO: Change call signature to include the TernaryStochasticActivation module instead of activation function.
     """
@@ -187,16 +152,23 @@ class AdaptiveResidualBlock(nnx.Module):
         self.batch_norm = nnx.BatchNorm(out_features, rngs=rngs)
         self.activation_fn1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
         self.activation_fn2 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        self.activation_fn3 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
 
     def __call__(self, x):
+        """
+        Forward pass.
+        - Ensures that the conv block always receives ternerized inputs.
+        - Ensures that the output stays ternary.
+        """
         x_res = x
         x = self.batch_norm(x)
+        x = self.activation_fn1(x)
         x = self.conv1(x)
         x = self.batch_norm(x)
-        x = self.activation_fn1(x)
+        x = self.activation_fn2(x)
         x = self.conv2(x)
         x = x + x_res
-        x = self.activation_fn2(x)
+        # x = self.activation_fn3(x)
         return x
     
 # -------------------------------------------------------------------
@@ -234,7 +206,6 @@ class ResNet(nnx.Module):
         # create the first residual block with 64 channels
         self.res_block1 = nnx.List(
             [
-                # ResidualBlock(in_features=64, out_features=64, kernel_size=kernel_size, padding="SAME", rngs=rngs, activation_fn=self.activation_function) 
                 AdaptiveResidualBlock(in_features=64, out_features=64, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
                 for _ in range(num64_blocks)
             ]
@@ -246,7 +217,6 @@ class ResNet(nnx.Module):
         # create the residual block for 128 channels
         self.res_block2 = nnx.List(
             [
-                # ResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, activation_fn=self.activation_function) 
                 AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
                 for _ in range(num128_blocks)
             ]
@@ -258,7 +228,6 @@ class ResNet(nnx.Module):
         # create the residual block for 256 channels
         self.res_block3 = nnx.List(
             [
-                # ResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, activation_fn=self.activation_function) 
                 AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
                 for _ in range(num256_blocks)
             ]
@@ -274,7 +243,9 @@ class ResNet(nnx.Module):
         self.classifier = nnx.Linear(in_features=ff_layer_sizes[1], out_features=10, rngs=rngs)
 
         # normalization (TODO: add a CIM specific normalization)
-
+        self.batch_norm1 = nnx.BatchNorm(ff_layer_sizes[0], rngs=rngs)
+        self.batch_norm2 = nnx.BatchNorm(ff_layer_sizes[1], rngs=rngs)
+               
         # max pooling
         self.max_pool = partial(nnx.max_pool, window_shape=(2, 2), strides=(2, 2))
 
@@ -310,8 +281,10 @@ class ResNet(nnx.Module):
         # print(f"Shape before feedforward layers: {x.shape}") # debug statement
 
         x = self.linear1(x)
+        x = self.batch_norm1(x)
         x = self.activation_fn_l1(x)
         x = self.linear2(x)
+        x = self.batch_norm2(x)
         x = self.activation_fn_l2(x)
         x = self.classifier(x)
         return x
@@ -559,32 +532,28 @@ def main():
 
     # if plotting is enabled, plot the training curves
     if args.plot_results:
-        fig, ax = plt.subplots(2, 1, figsize=(5, 5))
+        fig, ax = plt.subplots(2, 1, figsize=(7, 3.5))
         ax1, ax2 = ax[0], ax[1]
 
-        sns.lineplot(x=metrics_history['step'], y=metrics_history['train_loss'], label='Train Loss', ax=ax1, marker='o', lw=2.5)
-        sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_loss'], label='Valid Loss', ax=ax1, marker='o', lw=2.5)
+        sns.lineplot(x=metrics_history['step'], y=metrics_history['train_loss'], label='Train Loss', ax=ax1, marker='o', markersize=2, alpha=0.5, lw=2.5)
+        sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_loss'], label='Valid Loss', ax=ax1, marker='o', markersize=2, alpha=0.5, lw=2.5)
         ax1.axhline(y=metrics_history['test_loss'], color='red', linestyle='--', label='Test Loss')
         ax1.set_xlabel('Training Steps', fontsize=14)
         ax1.set_ylabel('Loss', fontsize=14)
 
-        sns.lineplot(x=metrics_history['step'], y=metrics_history['train_accuracy'], label='Train Accuracy', ax=ax2, marker='o', lw=2.5)
-        sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_accuracy'], label='Valid Accuracy', ax=ax2, marker='o', lw=2.5)
+        sns.lineplot(x=metrics_history['step'], y=metrics_history['train_accuracy'], label='Train Accuracy', ax=ax2, marker='o', markersize=2, alpha=0.5, lw=2.5)
+        sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_accuracy'], label='Valid Accuracy', ax=ax2, marker='o', markersize=2, alpha=0.5, lw=2.5)
         ax2.axhline(y=metrics_history['test_accuracy'], color='red', linestyle='--', label='Test Accuracy')
         ax2.set_xlabel('Training Steps', fontsize=14)
         ax2.set_ylabel('Accuracy', fontsize=14)
         sns.despine(ax=ax1)
         sns.despine(ax=ax2)
         plt.tight_layout()
-        plt.savefig(f"TEMP_cifar10_ternary_test1_{today}.png", dpi=300)
+        plt.savefig(f"../plots/cifar10_adaptive_ternary__{today}.png", dpi=300, bbox_inches='tight')
         plt.show()
 
 
 
 
-
-
-
-    
 if __name__ == "__main__":
     main()
