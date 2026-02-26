@@ -564,13 +564,13 @@ def main():
 
         sns.lineplot(x=metrics_history['step'], y=metrics_history['train_loss'], label='Train Loss', ax=ax1, marker='o', lw=2.5)
         sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_loss'], label='Valid Loss', ax=ax1, marker='o', lw=2.5)
-        ax1.axhline(y=metrics_history['test_loss'], color='red', linestyle='--', label='Test Loss')
+        ax1.axhline(y=metrics_history['test_loss'], color='k', alpha=0.6, linestyle='--', label='Test Loss')
         ax1.set_xlabel('Training Steps', fontsize=14)
         ax1.set_ylabel('Loss', fontsize=14)
 
         sns.lineplot(x=metrics_history['step'], y=metrics_history['train_accuracy'], label='Train Accuracy', ax=ax2, marker='o', lw=2.5)
         sns.lineplot(x=metrics_history['step'], y=metrics_history['valid_accuracy'], label='Valid Accuracy', ax=ax2, marker='o', lw=2.5)
-        ax2.axhline(y=metrics_history['test_accuracy'], color='red', linestyle='--', label='Test Accuracy')
+        ax2.axhline(y=metrics_history['test_accuracy'], color='k', alpha=0.6, linestyle='--', label='Test Accuracy')
         ax2.set_xlabel('Training Steps', fontsize=14)
         ax2.set_ylabel('Accuracy', fontsize=14)
         sns.despine(ax=ax1)

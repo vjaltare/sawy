@@ -122,6 +122,27 @@ def save_payload(state, configs, filename):
     
     print(f"Model saved to {filename_}")
 
+def save_plot_metadata(
+        metadata: dict,
+        filename: str,
+        **kwargs
+    ):
+
+    """
+    Save metadata for plots to a json file.
+    """
+    directory = "/Volumes/export/isn/vikrant/github/trident/plots"
+    filepath = os.path.join(directory, filename)
+
+    # check and create directory
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+    with open(filepath, 'w') as f:
+        json.dump(metadata, f, indent=4)
+
+    print(f"Metadata saved to {filepath}")
+
+
 
 # -------------------------------------------------------------------
 # Residual Block: outputs shape (2048)
@@ -532,6 +553,30 @@ def main():
 
     # if plotting is enabled, plot the training curves
     if args.plot_results:
+        filename = f"../plots/cifar10_adaptive_ternary_t{configs['thresholds'][1]}_n{configs['noise_std']}_{today}.pdf"
+        # dump metadata into a json file
+        metadata = {
+            'file': filename,
+            'levels': configs['levels'].tolist(),
+            'thresholds': configs['thresholds'].tolist(),
+            'noise_std': configs['noise_std'],
+            'train_steps': configs['train_steps'],
+            'batch_size': configs['batch_size']
+        }
+        metadata.update(hyperparameters)
+        metadata.update(
+            {
+                'test_accuracy': metrics_history['test_accuracy'],
+                'test_loss': metrics_history['test_loss'],
+                'num64_blocks': model_parameters['num64_blocks'],
+                'num128_blocks': model_parameters['num128_blocks'],
+                'num256_blocks': model_parameters['num256_blocks'],
+                'ff_layer_sizes': model_parameters['ff_layer_sizes']
+            }
+        )
+
+        save_plot_metadata(metadata=metadata, filename="metadata.json")
+
         fig, ax = plt.subplots(2, 1, figsize=(7, 3.5))
         ax1, ax2 = ax[0], ax[1]
 
@@ -549,8 +594,9 @@ def main():
         sns.despine(ax=ax1)
         sns.despine(ax=ax2)
         plt.tight_layout()
-        plt.savefig(f"../plots/cifar10_adaptive_ternary__{today}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
+
 
 
 
