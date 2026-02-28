@@ -99,7 +99,8 @@ def expected_state(
         noise_std: float,
         noise_mean: float = 0.0
 ):
-    """Ternary expected state for gaussian input-referred noise.
+    """
+    Ternary expected state for gaussian input-referred noise.
     Caveat: levels[1] = 0
     """
 

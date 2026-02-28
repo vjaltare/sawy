@@ -1,9 +1,13 @@
 """
-Testing out the ternary resNet like network with ternary stochastic activation on CIFAR-10 dataset.
+Testing out the ternary resNet like network with ternary stochastic activation on CIFAR-10 dataset. (V2)
 
-Created on: 02/24/2024
+- Changes from V1: Using strides instead of max pooling for downsampling.
 
-Best Inference Accuracy: 81.08% (see the metadata for more details)
+TODO: implement the shortcut connection in the AdaptiveResidualBlock when the input and output dimensions differ.
+
+Created on: 02/27/2026
+
+Best Inference Accuracy: 
 """
 
 import argparse
@@ -236,26 +240,32 @@ class ResNet(nnx.Module):
         )
 
         # create the second projection layer: 64 -> 128
+        res_block2 = [AdaptiveResidualBlock(in_features=64, out_features=128, kernel_size=kernel_size, padding="SAME", stride=(2, 2), rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)]
+        res_block2 += [AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std) for _ in range(num128_blocks - 1)]
+        self.res_block2 = nnx.List(res_block2)
         self.projection_block2 = nnx.Conv(in_features=64, out_features=128, kernel_size=(1, 1), padding="SAME", rngs=rngs)
 
-        # create the residual block for 128 channels
-        self.res_block2 = nnx.List(
-            [
-                AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
-                for _ in range(num128_blocks)
-            ]
-        )
+        # # create the residual block for 128 channels
+        # self.res_block2 = nnx.List(
+        #     [
+        #         AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
+        #         for _ in range(num128_blocks)
+        #     ]
+        # )
 
         # create projection block 128 -> 256
+        res_block3 = [AdaptiveResidualBlock(in_features=128, out_features=256, kernel_size=kernel_size, padding="SAME", stride=(2, 2), rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)]
+        res_block3 += [AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std) for _ in range(num256_blocks - 1)]
+        self.res_block3 = nnx.List(res_block3)
         self.projection_block3 = nnx.Conv(in_features=128, out_features=256, kernel_size=(1, 1), padding="SAME", rngs=rngs)
 
-        # create the residual block for 256 channels
-        self.res_block3 = nnx.List(
-            [
-                AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
-                for _ in range(num256_blocks)
-            ]
-        )
+        # # create the residual block for 256 channels
+        # self.res_block3 = nnx.List(
+        #     [
+        #         AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
+        #         for _ in range(num256_blocks)
+        #     ]
+        # )
 
         # activation function for linear layers
         self.activation_fn_l1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
@@ -275,7 +285,7 @@ class ResNet(nnx.Module):
         self.layer_norm2 = nnx.LayerNorm(ff_layer_sizes[1], rngs=rngs)
                
         # max pooling
-        self.max_pool = partial(nnx.max_pool, window_shape=(2, 2), strides=(2, 2))
+        # self.max_pool = partial(nnx.max_pool, window_shape=(2, 2), strides=(2, 2))
 
     def __call__(self, x):
         # input shape (batch_size, 32, 32, 3)
@@ -285,7 +295,7 @@ class ResNet(nnx.Module):
         # pass through the first residual block
         for res_block in self.res_block1:
             x = res_block(x)
-        x = self.max_pool(x)
+        # x = self.max_pool(x)
 
         # pass through project block 
         x = self.projection_block2(x) 
@@ -293,7 +303,7 @@ class ResNet(nnx.Module):
         # pass through second stage of residual blocks
         for res_block in self.res_block2:
             x = res_block(x)
-        x = self.max_pool(x)
+        # x = self.max_pool(x)
 
         # pass through projection block
         x = self.projection_block3(x)
@@ -309,12 +319,12 @@ class ResNet(nnx.Module):
         # print(f"Shape before feedforward layers: {x.shape}") # debug statement
 
         x = self.linear1(x)
-        # x = self.batch_norm1(x)
-        x = self.layer_norm1(x)
+        x = self.batch_norm1(x)
+        # x = self.layer_norm1(x)
         x = self.activation_fn_l1(x)
         x = self.linear2(x)
-        x = self.layer_norm2(x)
-        # x = self.batch_norm2(x)
+        # x = self.layer_norm2(x)
+        x = self.batch_norm2(x)
         x = self.activation_fn_l2(x)
         x = self.classifier(x)
         return x
@@ -562,7 +572,7 @@ def main():
 
     # if plotting is enabled, plot the training curves
     if args.plot_results:
-        filename = f"../plots/cifar10_adaptive_ternary_t{configs['thresholds'][1]}_n{configs['noise_std']}_{today}.png"
+        filename = f"../plots/cifar10_adaptive_ternary_v2_t{configs['thresholds'][1]}_n{configs['noise_std']}_{today}.png"
         # dump metadata into a json file
         metadata = {
             'file': filename,
