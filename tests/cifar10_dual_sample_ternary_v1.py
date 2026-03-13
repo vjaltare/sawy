@@ -1,9 +1,11 @@
 """
-Testing out the ternary resNet like network with ternary stochastic activation on CIFAR-10 dataset.
+Dual Sample Ternary. 
 
-Created on: 02/24/2024
+TODO: Write a doc and run tests
 
-Best Inference Accuracy: 81.08% (see the metadata for more details)
+Created on: 03/13/2026
+
+Best Inference Accuracy: 
 """
 
 import argparse
@@ -32,8 +34,8 @@ import seaborn as sns
 
 
 
-from utils import ternary_activation, load_cifar10_augment
-from models import TernaryStochasticActivation
+from utils import ternary_activation, load_cifar10_augment, dual_sample_ternary
+from models import TernaryStochasticActivation, DualSampleTernary
 
 import tensorflow_datasets as tfds  # TFDS to download CIFAR-10.
 import tensorflow as tf  # TensorFlow / `tf.data` operations.
@@ -50,15 +52,16 @@ def parse_args():
     parser.add_argument("--levels", nargs="+", type=float, default=[-1.0, 0.0, 1.0])
 
     # take in the initial thresholds
-    parser.add_argument("--thresholds", nargs="+", type=float, default=[-1.0, 1.0])
+    # parser.add_argument("--thresholds", nargs="+", type=float, default=[-1.0, 1.0])
+    parser.add_argument("--threshold", type=float, default=0.0)
 
     # take in the noise standard deviation
-    parser.add_argument("--noise_std", type=float, default=0.1)
+    parser.add_argument("--noise_std", type=float, default=1.0)
 
     # model architecture parameters
-    parser.add_argument("--num64_blocks", type=int, default=3) 
-    parser.add_argument("--num128_blocks", type=int, default=3)
-    parser.add_argument("--num256_blocks", type=int, default=4)
+    parser.add_argument("--num64_blocks", type=int, default=2) 
+    parser.add_argument("--num128_blocks", type=int, default=2)
+    parser.add_argument("--num256_blocks", type=int, default=2)
     parser.add_argument("--ff_layer_sizes", nargs="+", type=int, default=[1000, 500])
 
     # hyperparameters
@@ -164,9 +167,9 @@ class AdaptiveResidualBlock(nnx.Module):
                  out_features: int,
                 #  stride: tuple[int, int],
                  rngs: nnx.Rngs,
-                 levels: list[float],
-                 thresholds: list[float],
-                 noise_std: float,
+                #  levels: list[float],
+                 threshold: float = 0.0,
+                 noise_std: float = 1.0,
                  padding: str = "SAME",
                  **kwargs):
         
@@ -174,9 +177,12 @@ class AdaptiveResidualBlock(nnx.Module):
         self.conv2 = nnx.Conv(in_features=out_features, out_features=out_features, kernel_size=kernel_size, padding=padding, rngs=rngs)
         self.batch_norm1 = nnx.BatchNorm(out_features, rngs=rngs)
         self.batch_norm2 = nnx.BatchNorm(out_features, rngs=rngs)
-        self.activation_fn1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
-        self.activation_fn2 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
-        self.activation_fn3 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        self.threshold = threshold
+        self.noise_std = noise_std
+        # self.activation_fn1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        # self.activation_fn2 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        # self.activation_fn3 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        self.activation_fn = DualSampleTernary(threshold=self.threshold, noise_std=self.noise_std, rngs=rngs)
 
     def __call__(self, x):
         """
@@ -186,10 +192,10 @@ class AdaptiveResidualBlock(nnx.Module):
         """
         x_res = x
         x = self.batch_norm1(x)
-        x = self.activation_fn1(x)
+        x = self.activation_fn(x)
         x = self.conv1(x)
         x = self.batch_norm2(x)
-        x = self.activation_fn2(x)
+        x = self.activation_fn(x)
         x = self.conv2(x)
         x = x + x_res
         # x = self.activation_fn3(x)
@@ -210,16 +216,18 @@ class ResNet(nnx.Module):
             num128_blocks: int,
             num256_blocks: int,
             ff_layer_sizes: list[int],
-            # activation_function: Callable,
-            levels: list[float],
-            thresholds: list[float],
-            noise_std: float,
             rngs: nnx.Rngs,
-            **kwargs
+            # activation_function: Callable,
+            # levels: list[float],
+            threshold: float = 0.0,
+            noise_std: float = 1.0,
         ):
 
         # unpack the rngs
         self.rngs = rngs  
+        self.threshold = threshold
+        self.noise_std = noise_std
+
         
         # bind he activation function with its parameters
         # self.activation_function = partial(activation_function, thresholds=thresholds, levels=levels, noise_std=noise_std) # pass a key every time activation is called
@@ -230,36 +238,43 @@ class ResNet(nnx.Module):
         # create the first residual block with 64 channels
         self.res_block1 = nnx.List(
             [
-                AdaptiveResidualBlock(in_features=64, out_features=64, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
+                AdaptiveResidualBlock(in_features=64, out_features=64, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)
                 for _ in range(num64_blocks)
             ]
         )
 
         # create the second projection layer: 64 -> 128
+        # res_block2 = [AdaptiveResidualBlock(in_features=64, out_features=128, kernel_size=kernel_size, padding="SAME", stride=(2, 2), rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)]
+        # res_block2 += [AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std) for _ in range(num128_blocks - 1)]
+        # self.res_block2 = nnx.List(res_block2)
         self.projection_block2 = nnx.Conv(in_features=64, out_features=128, kernel_size=(1, 1), padding="SAME", rngs=rngs)
 
-        # create the residual block for 128 channels
+        # # create the residual block for 128 channels
         self.res_block2 = nnx.List(
             [
-                AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
+                AdaptiveResidualBlock(in_features=128, out_features=128, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)
                 for _ in range(num128_blocks)
             ]
         )
 
         # create projection block 128 -> 256
+        # res_block3 = [AdaptiveResidualBlock(in_features=128, out_features=256, kernel_size=kernel_size, padding="SAME", stride=(2, 2), rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)]
+        # res_block3 += [AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std) for _ in range(num256_blocks - 1)]
+        # self.res_block3 = nnx.List(res_block3)
         self.projection_block3 = nnx.Conv(in_features=128, out_features=256, kernel_size=(1, 1), padding="SAME", rngs=rngs)
 
-        # create the residual block for 256 channels
+        # # create the residual block for 256 channels
         self.res_block3 = nnx.List(
             [
-                AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, levels=levels, thresholds=thresholds, noise_std=noise_std)
+                AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)
                 for _ in range(num256_blocks)
             ]
         )
 
         # activation function for linear layers
-        self.activation_fn_l1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
-        self.activation_fn_l2 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        # self.activation_fn_l1 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        # self.activation_fn_l2 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
+        self.activation_fn_fc = DualSampleTernary(threshold=self.threshold, noise_std=self.noise_std, rngs=rngs)
 
         # create the feedforward layers
         self.linear1 = nnx.Linear(in_features=4096, out_features=ff_layer_sizes[0], rngs=rngs)
@@ -309,13 +324,13 @@ class ResNet(nnx.Module):
         # print(f"Shape before feedforward layers: {x.shape}") # debug statement
 
         x = self.linear1(x)
-        # x = self.batch_norm1(x)
-        x = self.layer_norm1(x)
-        x = self.activation_fn_l1(x)
+        x = self.batch_norm1(x)
+        # x = self.layer_norm1(x)
+        x = self.activation_fn_fc(x)
         x = self.linear2(x)
-        x = self.layer_norm2(x)
-        # x = self.batch_norm2(x)
-        x = self.activation_fn_l2(x)
+        # x = self.layer_norm2(x)
+        x = self.batch_norm2(x)
+        x = self.activation_fn_fc(x)
         x = self.classifier(x)
         return x
     
@@ -455,8 +470,8 @@ def main():
     data_dir =  "/local_disk/vikrant/datasets"
 
     configs = {
-        'levels': jnp.array(args.levels),
-        'thresholds': jnp.array(args.thresholds),
+        # 'levels': jnp.array(args.levels),
+        'threshold': args.threshold,
         'noise_std': args.noise_std,
         'learning_rate': args.learning_rate,
         'batch_size': args.batch_size,
@@ -512,8 +527,8 @@ def main():
         'num128_blocks': args.num128_blocks,
         'num256_blocks': args.num256_blocks,
         'ff_layer_sizes': args.ff_layer_sizes,
-        'levels': configs['levels'],
-        'thresholds': configs['thresholds'],
+        # 'levels': configs['levels'],
+        'threshold': configs['threshold'],
         'noise_std': configs['noise_std']
 
     }
@@ -559,13 +574,10 @@ def main():
 
     # TODO: add code to save the model and the results.
 
-    learned_th = model.res_block1[0].activation_fn1.thresholds # printing out where the thresholds end up being
-    print(f"Learned Thresholds: {learned_th}")
-
 
     # if plotting is enabled, plot the training curves
     if args.plot_results:
-        filename = f"../plots/cifar10_adaptive_ternary_t{configs['thresholds'][1]}_n{configs['noise_std']}_{today}.png"
+        filename = f"../plots/cifar10_dual_sample_ternary_v1_t{configs['thresholds'][1]}_n{configs['noise_std']}_{today}.png"
         # dump metadata into a json file
         metadata = {
             'file': filename,
