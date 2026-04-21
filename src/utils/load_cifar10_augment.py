@@ -96,8 +96,8 @@ def load_cifar10_augment(
     train_ds = train_ds.take(train_steps)
     train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
     
-    valid_ds = valid_ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    test_ds = test_ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    valid_ds = valid_ds.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
+    test_ds = test_ds.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
     
     # Convert to dict format for compatibility
     def to_dict_format(image, label):
