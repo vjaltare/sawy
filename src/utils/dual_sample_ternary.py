@@ -59,10 +59,10 @@ def dual_sample_ternary_fwd(
 def dual_sample_ternary_bwd(residuals, gradients):
     y, x, key, threshold, noise_std, noise_mean = residuals
 
-    dx = gradients * (1 - jnp.square(y)) # gradient is 1 when output is 1 or -1, else 0
+    dx = gradients * (1 - jnp.square(y)) # gradient is 0 when output is 1 or -1, else 1
 
     return (dx, None, None, None, None)
-
+    
 # bind the forward and backward functions
 dual_sample_ternary.defvjp(dual_sample_ternary_fwd, dual_sample_ternary_bwd)
 

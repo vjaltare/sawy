@@ -73,6 +73,7 @@ def parse_args():
     parser.add_argument("--num64_blocks", type=int, default=2) 
     parser.add_argument("--num128_blocks", type=int, default=2)
     parser.add_argument("--num256_blocks", type=int, default=2)
+    parser.add_argument("--num512_blocks", type=int, default=2)
     parser.add_argument("--ff_layer_sizes", nargs="+", type=int, default=[1000, 500])
 
     # hyperparameters
@@ -202,14 +203,15 @@ class AdaptiveResidualBlock(nnx.Module):
         - Ensures that the output stays ternary.
         """
         x_res = x
+        x = self.conv1(x)
         x = self.batch_norm1(x)
         x = self.activation_fn(x)
-        x = self.conv1(x)
+        x = self.conv2(x)
         x = self.batch_norm2(x)
         x = self.activation_fn(x)
-        x = self.conv2(x)
-        x = self.activation_fn(x) + x_res
-        # x = self.activation_fn3(x)
+        x = x + x_res
+        # x = self.activation_fn(x) + x_res
+        # x = self.activation_fn(x + x_res)
         return x
     
 # -------------------------------------------------------------------
@@ -226,6 +228,7 @@ class ResNet(nnx.Module):
             num64_blocks: int,
             num128_blocks: int,
             num256_blocks: int,
+            num512_blocks: int,
             ff_layer_sizes: list[int],
             rngs: nnx.Rngs,
             # activation_function: Callable,
@@ -274,11 +277,22 @@ class ResNet(nnx.Module):
         # self.res_block3 = nnx.List(res_block3)
         self.projection_block3 = nnx.Conv(in_features=128, out_features=256, kernel_size=(1, 1), padding="SAME", rngs=rngs)
 
-        # # create the residual block for 256 channels
+        # create the residual block for 256 channels
         self.res_block3 = nnx.List(
             [
                 AdaptiveResidualBlock(in_features=256, out_features=256, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)
                 for _ in range(num256_blocks)
+            ]
+        )
+
+        # residual blocks for 256 -> 512 channels
+        self.projection_block4 = nnx.Conv(in_features=256, out_features=512, kernel_size=(1, 1), padding="SAME", rngs=rngs)
+
+        # create the residual block for 512 channels
+        self.res_block4 = nnx.List(
+            [
+                AdaptiveResidualBlock(in_features=512, out_features=512, kernel_size=kernel_size, padding="SAME", rngs=rngs, thresholds=self.threshold, noise_std=self.noise_std)
+                for _ in range(num512_blocks)
             ]
         )
 
@@ -288,7 +302,7 @@ class ResNet(nnx.Module):
         self.activation_fn_fc = DualSampleTernary(threshold=self.threshold, noise_std=self.noise_std, rngs=rngs)
 
         # create the feedforward layers
-        self.linear1 = nnx.Linear(in_features=4096, out_features=ff_layer_sizes[0], rngs=rngs)
+        self.linear1 = nnx.Linear(in_features=8192, out_features=ff_layer_sizes[0], rngs=rngs) # the in_features of this line need to be adjusted as the res-blocks change. 4096 for 256 filters, 8192 for 512 filters
         self.linear2 = nnx.Linear(in_features=ff_layer_sizes[0], out_features=ff_layer_sizes[1], rngs=rngs)
         self.classifier = nnx.Linear(in_features=ff_layer_sizes[1], out_features=10, rngs=rngs)
 
@@ -327,6 +341,15 @@ class ResNet(nnx.Module):
         # pass through the third stage of residual blocks
         for res_block in self.res_block3:
             x = res_block(x)
+
+        # pass through projection block
+        x = self.projection_block4(x)
+
+        # pass through the fourth stage of residual blocks
+        for res_block in self.res_block4:
+            x = res_block(x)
+
+        # max pool
         x = self.max_pool(x)
 
         # pass through the feedforward layers
@@ -537,6 +560,7 @@ def main():
         'num64_blocks': args.num64_blocks,
         'num128_blocks': args.num128_blocks,
         'num256_blocks': args.num256_blocks,
+        'num512_blocks': args.num512_blocks,
         'ff_layer_sizes': args.ff_layer_sizes,
         # 'levels': configs['levels'],
         'threshold': configs['threshold'],
@@ -588,7 +612,7 @@ def main():
 
     # if plotting is enabled, plot the training curves
     if args.plot_results:
-        filename = f"../plots/cifar10_dual_sample_ternary_v1_i_t{configs['threshold']}_n{configs['noise_std']}_{today}.png"
+        filename = f"../plots/cifar10_dual_sample_ternary_v1_resnet36_t{configs['threshold']}_n{configs['noise_std']}_{today}.png"
         # dump metadata into a json file
         metadata = {
             'file': filename,

@@ -27,11 +27,16 @@ class DualSampleTernary(nnx.Module):
 
         # here we can optionally define learnable parameters
 
+        # learnable offsets
+        # self.loc_offset = nnx.Param(jnp.array(0.0))
+        # self.scale_offset = nnx.Param(jnp.array(1.0))
+
     def __call__(self, x):
         key = self.rngs.activation()
 
         y = dual_sample_ternary(
             x,
+            # (x - self.loc_offset) / (self.scale_offset + 1e-8),
             key,
             threshold=self.threshold,
             noise_std=self.noise_std,
