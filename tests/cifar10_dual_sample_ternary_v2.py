@@ -189,6 +189,7 @@ class AdaptiveResidualBlock(nnx.Module):
         # self.activation_fn3 = TernaryStochasticActivation(levels=levels, thresholds=thresholds, noise_std=noise_std, rngs=rngs)
         self.activation_fn = DualSampleTernary(threshold=self.threshold, noise_std=self.noise_std, rngs=rngs)
 
+
     def __call__(self, x):
         """
         Forward pass.

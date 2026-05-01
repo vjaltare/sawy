@@ -62,7 +62,7 @@ def save_payload(state, configs, filename):
         'state': state
     }
 
-    checkpoint_dir = "/local_disk/vikrant/scrramble/models"
+    checkpoint_dir = "/local_disk/vikrant/trident/models"
     filename_ = os.path.join(checkpoint_dir, filename)
 
     os.makedirs(os.path.dirname(filename_), exist_ok=True)  # Ensure the directory exists.
@@ -71,6 +71,47 @@ def save_payload(state, configs, filename):
         pickle.dump(payload, f)
     
     print(f"Model saved to {filename_}")
+
+
+# --------------------------------------------------------------
+# Parsing input arguments
+# --------------------------------------------------------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Trident-FFN on UCI-Iris")
+
+    # take in the levels
+    parser.add_argument("--levels", nargs="+", type=float, default=[-1.0, 0.0, 1.0])
+
+    # take in the initial thresholds
+    # parser.add_argument("--thresholds", nargs="+", type=float, default=[-1.0, 1.0])
+    parser.add_argument("--threshold", type=float, default=0.0)
+
+    # take in the noise standard deviation
+    parser.add_argument("--noise_std", type=float, default=1.0)
+
+    # model architecture parameters
+    # parser.add_argument("--num64_blocks", type=int, default=2) 
+    # parser.add_argument("--num128_blocks", type=int, default=2)
+    # parser.add_argument("--num256_blocks", type=int, default=2)
+    # parser.add_argument("--num512_blocks", type=int, default=2)
+    parser.add_argument("--ff_layer_sizes", nargs="+", type=int, default=[1000, 500])
+
+    # hyperparameters
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--train_steps", type=int, default=int(5e4))
+    parser.add_argument("--eval_every", type=int, default=1000)
+    parser.add_argument("--seed_next", type=int, default=0)
+    parser.add_argument("--checkpoint", action='store_true')
+    parser.add_argument("--checkpoint_every", type=int, default=1000)
+
+
+    #TODO: Add arguments for saving results and the model.
+    parser.add_argument("--plot_results", action='store_true')
+
+
+
+    return parser.parse_args()
 
 # ------------------------------------
 # Import UCI 
@@ -102,6 +143,8 @@ def load_uci_iris(
     split_index = jnp.floor(train_test_split * X.shape[0]).astype(int)
     X_train, X_test = X[:split_index], X[split_index:]
     y_train, y_test = y[:split_index], y[split_index:]
+
+    print(f"Size of training data {X_train.shape}, size of test data {X_test.shape}")
 
 
 
@@ -193,6 +236,8 @@ def train(
         metrics_history: dict,
         metrics: nnx.MultiMetric,
         configs: dict,
+          checkpoint_every: int,
+        checkpoint_flag: bool = False,
         **kwargs
 ):
     
@@ -207,6 +252,15 @@ def train(
 
         # train the model
         train_step(model, optimizer, metrics, train_inputs, train_labels)
+
+        # TODO: Add script to checkpoint the model
+        # Checkpointing the model
+        if checkpoint_flag and (step%checkpoint_every==0 or step==train_steps-1):
+            file = f"ffn_uci_iris_hidden_{configs['layers'][1]}_noise_{configs['noise_std']}_threshold_{configs['threshold']}_step_{step}.pkl"
+            graphdef, state = nnx.split(model)
+            save_payload(state, configs, file)
+            model = nnx.merge(graphdef, state)
+                    
 
         # evaluate and checkpoint the model
         if step > 0 and (step%eval_every==0 or step == train_steps-1):
@@ -225,13 +279,12 @@ def train(
                 metrics_history[f"eval_{metric}"].append(value.item())
             metrics.reset()
 
-            # TODO: Add script to checkpoint the model
-
         
             print(f"Step {step}/{train_steps} | Train Accuracy: {metrics_history['train_accuracy'][-1]:.4f} | Eval Accuracy: {metrics_history['eval_accuracy'][-1]:.4f}")
     
     best_accuracy = max(metrics_history['eval_accuracy'])
-    print(f"Best Eval Accuracy: {best_accuracy:.4f}")
+    best_acc_idx = jnp.argmax(jnp.array(metrics_history['eval_accuracy'])).astype(int)
+    print(f"Best Eval Accuracy: {best_accuracy:.4f} | Step: {metrics_history['step'][best_acc_idx]}")
 
     return model, metrics_history
 
@@ -241,15 +294,18 @@ def train(
 # ------------------------------------
 def main():
 
+    # parse the input arguments
+    args = parse_args()
+
     # load the data
-    X_train, X_test, y_train, y_test = load_uci_iris(normalize=True, key=101)
+    X_train, X_test, y_train, y_test = load_uci_iris(normalize=True, key=101, train_test_split=0.7)
     configs = {
-        'train_steps': 5000,
-        'eval_every': 100,
-        'learning_rate': 3e-4,
-        'threshold': 0.0,
-        'noise_std': 0.3,
-        'layers': [X_train.shape[1], 10, 3],
+        'train_steps': args.train_steps,
+        'eval_every': args.eval_every,
+        'learning_rate': args.learning_rate,
+        'threshold': args.threshold,
+        'noise_std': args.noise_std,
+        'layers': [X_train.shape[1], 32, 3],
         'seed': 234
     }
 
@@ -268,17 +324,32 @@ def main():
         rngs = rngs
     )
 
+    nnx.display(model)
+
+    # optimizer = nnx.Optimizer(
+    #     model,
+    #     optax.chain(
+    #         optax.clip_by_global_norm(1.0),
+    #         optax.sgd(
+    #             learning_rate=configs['learning_rate'],
+    #             momentum=0.9
+    #         )
+    #     ),
+    #     wrt=nnx.Param
+    # )
+
     optimizer = nnx.Optimizer(
         model,
         optax.chain(
             optax.clip_by_global_norm(1.0),
-            optax.sgd(
+            optax.adamw(
                 learning_rate=configs['learning_rate'],
-                momentum=0.9
+                weight_decay=1e-4
             )
         ),
         wrt=nnx.Param
     )
+
 
     # define metrics
     metrics = nnx.MultiMetric(
@@ -297,7 +368,9 @@ def main():
         test_labels=y_test,
         metrics_history=metrics_history,
         metrics=metrics,
-        configs=configs
+        configs=configs,
+        checkpoint_flag=args.checkpoint,
+        checkpoint_every=args.checkpoint_every
     )
 
 
