@@ -161,9 +161,10 @@ class FFN(nnx.Module):
             layers: list[int],
             noise_std: float = 0.5,
             threshold: float = 0.0,
+            ActivationFunction: nnx.Module = DualSampleTernary,
             **kwargs):
         
-        self.activation = DualSampleTernary(threshold=threshold, noise_std=noise_std, rngs=rngs)
+        self.activation = ActivationFunction(threshold=threshold, noise_std=noise_std, rngs=rngs)
 
         self.layers = nnx.List([
             nnx.Linear(in_features=li, out_features=lo, rngs=rngs) for li, lo in zip(layers[:-1], layers[1:])
@@ -256,7 +257,7 @@ def train(
         # TODO: Add script to checkpoint the model
         # Checkpointing the model
         if checkpoint_flag and (step%checkpoint_every==0 or step==train_steps-1):
-            file = f"ffn_uci_iris_hidden_{configs['layers'][1]}_noise_{configs['noise_std']}_threshold_{configs['threshold']}_step_{step}.pkl"
+            file = f"ffn_uci_iris_hidden_date_{today}_{configs['layers'][1]}_noise_{configs['noise_std']}_threshold_{configs['threshold']}_step_{step}.pkl"
             graphdef, state = nnx.split(model)
             save_payload(state, configs, file)
             model = nnx.merge(graphdef, state)
