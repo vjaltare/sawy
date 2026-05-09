@@ -237,7 +237,7 @@ def train(
         metrics_history: dict,
         metrics: nnx.MultiMetric,
         configs: dict,
-          checkpoint_every: int,
+        checkpoint_every: int,
         checkpoint_flag: bool = False,
         **kwargs
 ):
