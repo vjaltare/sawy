@@ -111,6 +111,7 @@ def parse_args():
     parser.add_argument("--checkpoint", action='store_true')
     # parser.add_argument("--checkpoint_every", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--train_test_split", type=float, default=0.7)
 
 
     #TODO: Add arguments for saving results and the model.
@@ -219,23 +220,26 @@ def train(
             params=configs['seed'] + 0,
             dropout=configs['seed'] + 1,
             activation=configs['seed'] + 2,
+            next=configs['seed'] + 3
         )
+
+        configs['rng_headers'] = ['params+0', 'dropout+1', 'activation+2', 'next+3']
 
         model = FFN(
             layers = configs['layers'],
-            noise_std = noise_std,
+            noise_std = noise_std.item(),
             threshold = configs['threshold'],
             ActivationFunction = DualSampleTernary,
             rngs = rngs
         )
 
-        linear_model = FFN(
-            layers = configs['layers'],
-            noise_std = noise_std,
-            threshold = configs['threshold'],
-            ActivationFunction = CustomLinear,
-            rngs = rngs
-        )
+        # linear_model = FFN(
+        #     layers = configs['layers'],
+        #     noise_std = noise_std,
+        #     threshold = configs['threshold'],
+        #     ActivationFunction = CustomLinear,
+        #     rngs = rngs
+        # )
 
         optimizer = nnx.Optimizer(
         model,
@@ -286,35 +290,36 @@ def train(
 
         ## TODO: determine checkpointing
         if checkpoint_flag:
-            data['noise_std'] = noise_std
+            configs['noise_std'] = noise_std.item()
             
             ## computing SNR for current noise level
-            gd_tri, state_trident = nnx.split(model)
-            gd_linear, state_linear = nnx.split(linear_model)
-            linear_model = nnx.merge(gd_linear, state_trident) # give the linear models weights from the trained trident model
+            # gd_tri, state_trident = nnx.split(model)
+            # gd_linear, state_linear = nnx.split(linear_model)
+            # linear_model = nnx.merge(gd_linear, state_trident) # give the linear models weights from the trained trident model
 
             # compute the SNR using hidden layer pre-activations
-            hidden_layer = linear_model.activation(linear_model.layers[0](train_inputs)) # should be a (150, 32) output
+            act_hidden_layer = model.activation(model.layers[0](test_inputs))
+            hidden_layer = model.layers[0](test_inputs) # should be a (150, 32) output
 
             # compute the rms across the dataset
             hidden_layer = hidden_layer.flatten()
+            act_hidden_layer = act_hidden_layer.flatten()
             rms_pre_act = jnp.sqrt(jnp.mean(hidden_layer**2))
             snr = 20*jnp.log10(rms_pre_act/noise_std)
-            training_sparsity = jnp.mean(hidden_layer == 0)
+            training_sparsity = jnp.mean(act_hidden_layer == 0)
             print(f"Noise Std: {noise_std:.4f} | SNR: {snr:.2f} dB | Sparsity: {training_sparsity*100:.2f}%")
 
             # append SNR to data dictionary
-            data['training_snr'].append(snr.item())
-
-            # prep the configs
-            data['training_sparsity'].append(training_sparsity.item())
+            data['training_snr'] = snr.item()
+            data['training_sparsity'] = training_sparsity.item()
 
             # save the model, data and configs
             filename = f"snr_sweep_iris_{today}_noise_{noise_std:.4f}.pkl"
+            graphdef_trident, state_trident = nnx.split(model)
             save_payload(state_trident, configs, filename, data)
 
             # break # for testing purposes, break after the first noise level
-        os.system('clear')
+        # os.system('clear')
             
 
     return model, metrics_history
@@ -329,7 +334,7 @@ def main():
     args = parse_args()
 
     # load the data
-    X_train, X_test, y_train, y_test = load_uci_iris(normalize=True, key=101, train_test_split=0.7)
+    X_train, X_test, y_train, y_test = load_uci_iris(normalize=True, key=args.seed, train_test_split=args.train_test_split)
 
     # noise std array
     noise_std_arr = jnp.logspace(-3, 3, 7)
