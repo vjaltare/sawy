@@ -135,3 +135,4 @@ Thumbs.db
 
 # folders
 plots/
+plots/*.pdf
