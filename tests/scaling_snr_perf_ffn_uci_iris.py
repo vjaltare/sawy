@@ -290,7 +290,7 @@ def main():
     # set up array of layer sizes to iterate over
     hl_range = args.hidden_layer_range
     hl_sizes = jnp.logspace(hl_range[0], hl_range[1], num=args.hl_num_points)
-    print(f"HIDDEN LAYER SIZES: {hl_sizes[0], hl_sizes[-1]}")
+    print(f"HIDDEN LAYER SIZES: {hl_sizes[0].item(), hl_sizes[-1].item()}")
 
     # set up an array for noise levels
     noise_std_arr = jnp.logspace(args.noise_std[0], args.noise_std[1], num=args.noise_num_points)
@@ -395,7 +395,7 @@ def main():
                 sparsity = jnp.mean(sparsity == 0.0)
 
                 # dump everything into the data dictionary
-                data_dict['total_params'].append(total_params)
+                data_dict['total_params'].append(int(total_params))
                 data_dict['accuracy'].append(accuracy.item())
                 data_dict['sparsity'].append(sparsity.item())
                 data_dict['training_snr'].append(snr_train.item())
