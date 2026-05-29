@@ -211,7 +211,7 @@ def generate_data(
 
 def main():
     # for testing purposes
-    var_loss_models = glob.glob(os.path.join(MODEL_PATH, "var_loss_snr_sweep_iris_2026-05-26_alpha_0.0001_noise*")) # start with the lowest regularizer alpha=1e-4
+    var_loss_models = glob.glob(os.path.join(MODEL_PATH, "var_loss_snr_sweep_iris_2026-05-26_alpha_0.0100_noise*")) # start with the lowest regularizer alpha=1e-4
     print(var_loss_models)
 
     # load a dummy model for configs

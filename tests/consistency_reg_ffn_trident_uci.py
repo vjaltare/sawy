@@ -1,19 +1,19 @@
 """
-Rescuing performance degradation due to high noise my minimizing variance of the finla layer.
-- Consider the 32-hidden layer network.
-- Modify the loss function to include variance loss:
-    total_loss = ce_loss + alpha * var_loss
-- var_loss = variance of the output of the final layer across the batch
-- alpha is a hyperparameter that controls the trade-off between the cross-entropy loss and the variance loss
-- sweep over injected noise levels (refer to: snr_vs_perf_ffn_trident.py)
+Training feedforward network on UCI-Iris + TriDENT using consistency regularization.
+Consider the 32-hidden units network to being with,
+-Modify the loss function as follows:
+For a given input X_i, compute
+y_1 = model(X_i. rngs1)
+y_2 = model(X_i, rngs2)
+total_loss = CE_loss(y_1 or y_2, labels) + alpha * MSE_loss(y_1, y_2)
 
-Notes: 
-[05/29/2026]
-- Results are not significantly different than using CE loss only for low alpha values.
-- For larger alpha values, the model does not train that well.
-- Proceed with tweaking the loss function. Refer to `consistency_reg_ffn_trident_uci.py` for the next iteration where we use consistency regularization instead of variance loss.
+Sweep over:
+    - alpha is a hyperparameter
+    - sweep over injected noise
 
-"""
+NOTES: TODO
+
+""" 
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -92,11 +92,12 @@ def save_payload(state, configs, filename, data = None):
     
     print(f"Model saved to {filename_}")
 
+
 # --------------------------------------------------------------
 # Parsing input arguments
 # --------------------------------------------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description="Trident-FFN on UCI-Iris")
+    parser = argparse.ArgumentParser(description="Consistency Regularization Trident-FFN on UCI-Iris")
 
     # take in the levels
     parser.add_argument("--levels", nargs="+", type=float, default=[-1.0, 0.0, 1.0])
@@ -143,20 +144,20 @@ def loss_fn(
         alpha: float = 1e-3, # contribution of variance loss in total loss
         loss_function: Callable = optax.softmax_cross_entropy_with_integer_labels
     ):
-    # forwad pass through the model
-    logits = model(X)
+    # two forwad passses through the model
+    logits1 = model(X)
+    logits2 = model(X)
 
-    # using softmax cross-entropy with integer labels
-    ce_loss = loss_function(logits, labels=labels).mean()
+    # using softmax cross-entropy with integer labels: use either logits1 or logits2
+    ce_loss = loss_function(logits1, labels=labels).mean()
 
-    # add variance loss
-    var_loss = jnp.var(logits, axis=0).mean() # variance across the batch, averaged over the output dimensions. Note that batch dimension is 0.
+    # NEW: Consistency regularizer
+    consistency_loss = jnp.mean((logits1 - logits2)**2)
 
     # compute total loss
-    total_loss = ce_loss + alpha*var_loss
+    total_loss = ce_loss + alpha*consistency_loss
 
-
-    return total_loss, logits
+    return total_loss, [logits1, logits2]
 
         
 # training step
@@ -172,10 +173,10 @@ def train_step(
     ):
 
     grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
-    (loss, logits), grads = grad_fn(model=model, X=X, labels=label, alpha=alpha)
-    metrics.update(loss=loss, logits=logits, labels=label)
+    (loss, [logits1, logits2]), grads = grad_fn(model=model, X=X, labels=label, alpha=alpha)
+    metrics.update(loss=loss, logits=logits1, labels=label)
     optimizer.update(model, grads)
-
+    
 # evaluation step
 @nnx.jit
 def eval_step(
@@ -186,8 +187,8 @@ def eval_step(
     alpha: float = 1e-3, # regularizer for variance loss
     loss_fn: Callable = loss_fn
  ):
-    loss, logits = loss_fn(model=model, X=X, labels=label, alpha=alpha)
-    metrics.update(loss=loss, logits=logits, labels=label)
+    loss, [logits1, logits2] = loss_fn(model=model, X=X, labels=label, alpha=alpha)
+    metrics.update(loss=loss, logits=logits1, labels=label)
 
 
 # ------------------------------------
@@ -210,7 +211,7 @@ def train(
     """
     
     print("--"*50)
-    print(f"Variance Loss Noise Sweep: UCI Iris Dataset")
+    print(f"Consistency Regularization Noise-alpha sweep: UCI Iris Dataset")
     print("--"*50)
 
     eval_every = configs['eval_every']
@@ -312,13 +313,13 @@ def train(
                 data['alpha'] = alpha.item()
 
                 # save the model, data and configs
-                filename = f"var_loss_snr_sweep_iris_{today}_alpha_{alpha:.4f}_noise_{noise_std:.4f}.pkl"
+                filename = f"consistency_reg_snr_sweep_iris_{today}_alpha_{alpha:.4f}_noise_{noise_std:.4f}.pkl"
                 graphdef_trident, state_trident = nnx.split(model)
                 save_payload(state_trident, configs, filename, data)
 
-                # if in test mode just return after the first checkpoint
-                if test_mode:
-                    return model, metrics_history
+            # if in test mode just return after the first checkpoint
+            if test_mode:
+                return model, metrics_history
             
 
     return model, metrics_history
@@ -330,6 +331,11 @@ def main():
 
     # parse the input arguments
     args = parse_args()
+
+    if args.test_mode:
+        print("xx"*50)
+        print("TEST MODE")
+        print("xx"*50)
 
     # load the data
     X_train, X_test, y_train, y_test = load_uci_iris(normalize=True, key=args.seed, train_test_split=args.train_test_split)
@@ -346,13 +352,14 @@ def main():
         'learning_rate': args.learning_rate,
         'threshold': args.threshold,
         'noise_std_arr': noise_std_arr,
+        'train_test_split': args.train_test_split,
         'alpha_arr': alpha_arr,
         'layers': [X_train.shape[1], 32, 3],
-        'seed': args.seed
+        'seed': args.seed # also used for train test split
     }
 
-    print(args.test_mode) # is this true?
-    print(args.learning_rate)
+    # print(args.test_mode) # is this true?
+    # print(args.learning_rate)
 
 
     model, metrics_history = train(
@@ -367,13 +374,16 @@ def main():
 
     # IN TEST MODE as a test, print out contents of a saved model
     if args.test_mode:
-        fname = f"TEST_var_loss_snr_sweep_iris_{today}_alpha_{alpha_arr[0]:.4f}_noise_{noise_std_arr[0].item():.4f}.pkl"
+        fname = f"TEST_consistency_reg_snr_sweep_iris_{today}_alpha_{alpha_arr[0]:.4f}_noise_{noise_std_arr[0].item():.4f}.pkl"
         with open(os.path.join(MODEL_PATH, fname), "rb") as f:
             loaded_state = pickle.load(f)
 
         print(loaded_state['data'])
         print(loaded_state['configs'])
         print(loaded_state['state'])
+
+        # remove the model file after loading
+        os.remove(os.path.join(MODEL_PATH, fname))
 
 
 if __name__ == "__main__":
