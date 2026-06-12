@@ -1,5 +1,11 @@
 """
-Dual Sample Ternary activation with simplified gradients.
+Dual Sample Ternary activation with theoretical gradients.
+
+- Gradient: 2 gaussian_pdf(x=theta, mu=y_tilde, sigma=noise_std), 
+y_tilde: noiseless preactivation.
+
+Notes:
+TODO
 """
 
 import jax
@@ -7,7 +13,7 @@ import jax.numpy as jnp
 
 ## defining the activation function
 @jax.custom_vjp
-def dual_sample_ternary(
+def dual_sample_ternary_exact(
         x: float,
         key: jax.random.key,
         threshold: float = 0.0,
@@ -42,7 +48,7 @@ def dual_sample_ternary(
 
     return sign * mag
 
-def dual_sample_ternary_fwd(
+def dual_sample_ternary_exact_fwd(
     x: float,
     key: jax.random.key,
     threshold: float = 0.0,
@@ -50,7 +56,7 @@ def dual_sample_ternary_fwd(
     noise_mean: float = 0.0,
     **kwargs
 ):
-    y = dual_sample_ternary(
+    y = dual_sample_ternary_exact(
         x,
         key,
         threshold=threshold,
@@ -60,15 +66,15 @@ def dual_sample_ternary_fwd(
     )
     return y, (y, x, key, threshold, noise_std, noise_mean)
 
-def dual_sample_ternary_bwd(residuals, gradients):
+def dual_sample_ternary_exact_bwd(residuals, gradients):
     y, x, key, threshold, noise_std, noise_mean = residuals
 
-    dx = gradients * (1 - jnp.square(y)) # gradient is 0 when output is 1 or -1, else 1
+    dx = gradients * (2*jax.scipy.stats.norm.pdf(x=threshold, loc=x, scale=noise_std)) * (noise_std * jnp.sqrt(2*jnp.pi)/4)
 
     return (dx, None, None, None, None)
     
 # bind the forward and backward functions
-dual_sample_ternary.defvjp(dual_sample_ternary_fwd, dual_sample_ternary_bwd)
+dual_sample_ternary_exact.defvjp(dual_sample_ternary_exact_fwd, dual_sample_ternary_exact_bwd)
 
     
 
