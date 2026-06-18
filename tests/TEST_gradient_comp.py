@@ -116,7 +116,7 @@ def parse_args():
     # parser.add_argument("--checkpoint_every", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train_test_split", type=float, default=0.7)
-    parser.add_argument("--num_resamples", type=int, default=30) # number of resamples to compute the average gradients for trident
+    parser.add_argument("--num_resamples", type=int, default=30)
 
 
     #TODO: Add arguments for controling the hyperparameter
@@ -126,7 +126,6 @@ def parse_args():
     # TODO: test mode flag
     parser.add_argument("--test_mode", action='store_true')
     parser.add_argument("--store_grads", action='store_true')
-    parser.add_argument("--store_cosine", action='store_true')
 
     return parser.parse_args()
 
@@ -207,7 +206,6 @@ def train(
         checkpoint_flag: bool = False,
         test_mode: bool = False,
         store_grads: bool = False,
-        store_cosine: bool = False,
         **kwargs    
     ):
 
@@ -302,53 +300,66 @@ def train(
     metrics_history_trident = defaultdict(list)
     metrics_history_exact = defaultdict(list)
     gradients_history = defaultdict(list)
-    cosine_sims = defaultdict(list) # combine -> steps, cosine similarity, accuracy.
+    cosine_sims = defaultdict(list)
 
     for step in range(train_steps):
 
+        # TODO: FINALIZE AND store gradients for averaging
+        tri_grads_list = None
+
+        # compute gradients and record the cosine similarities
+        # grads_trident1 = compute_grads(model_trident, train_inputs, train_labels)
+        # grads_trident2 = compute_grads(model_trident, train_inputs, train_labels)
+        # print(f"Diff grads: {jnp.linalg.norm(grads_trident1['layers'][0]['kernel'] - grads_trident2['layers'][0]['kernel'])}")
+        for r in range(num_resamples):
+            grads_trident = compute_grads(model_trident, train_inputs, train_labels)
+            if tri_grads_list is None:
+                tri_grads_list = grads_trident['layers'][0]['kernel'].flatten()
+            else:
+                tri_grads_list = tri_grads_list + grads_trident['layers'][0]['kernel'].flatten()
+
+        tri_grads_list = tri_grads_list/num_resamples
+
+        print(f"Step {step} | TriDENT Gradients (resampled): {tri_grads_list[:5]}")
+        grads_trident = jnp.array(tri_grads_list)
+
+
+
+        grads_exact = compute_grads(model_trident_exact, train_inputs, train_labels)
+        print(f"Step {step} | Exact Gradients: {grads_exact['layers'][0]['kernel'].flatten().tolist()[:5]}")
+        # grads_trident = grads_trident['layers'][0]['kernel'].flatten()
+        grads_exact = grads_exact['layers'][0]['kernel'].flatten()
+
+        cosine_sim = jnp.dot(grads_trident, grads_exact) / (jnp.linalg.norm(grads_trident) * jnp.linalg.norm(grads_exact) + 1e-8)
+        print(f"Cosine sim: {cosine_sim.item()}")
+        # cosine_sims['step'].append(step)
+        # cosine_sims['cosine_similarity'].append(cosine_sim.item())
+
+        # # compute and record the gradients: record every eval_every steps and at the final step
+        # # if step > 0 and (step%eval_every==0 or step == train_steps-1):
+        # #     grads_trident = compute_grads(model_trident, train_inputs, train_labels)
+        # #     grads_exact = compute_grads(model_trident_exact, train_inputs, train_labels)
+        # #     # print(type(grads_trident['layers'][0]['kernel'].flatten().tolist()), grads_trident['layers'][0]['kernel'].shape)
+        # #     gradients_history['step'].append(step)
+        # #     gradients_history['trident'].append(grads_trident['layers'][0]['kernel'].flatten().tolist())
+        # #     gradients_history['exact'].append(grads_exact['layers'][0]['kernel'].flatten().tolist())
 
         # train the models
         train_step(model_trident, optimizer_trident, metrics_trident, train_inputs, train_labels)
         train_step(model_trident_exact, optimizer_exact, metrics_exact, train_inputs, train_labels)
 
+        # if test_mode:
+        #     if step == train_steps-1:
+        #         plt.scatter(gradients_history['exact'], gradients_history['trident'], alpha=0.1)
+        #         plt.xlabel("Exact Gradients")
+        #         plt.ylabel("Trident Gradients")
+        #         plt.savefig("tmp_grads_comp.png")
+        #         plt.show()
+
 
         # evaluate and checkpoint the models
         if not test_mode:
-            if step >= 0 and (step%eval_every==0 or step == train_steps-1):
-
-                ## append the cosine similarities
-
-                # list to store gradients
-                trident_grads_list = None
-
-                # resample over same datum to compute expected gradient for trident 
-                for r in range(num_resamples): # TODO: not resampling helps! Remove this loop
-                    grads_trident = compute_grads(model_trident, train_inputs, train_labels)
-                    if trident_grads_list is None:
-                        trident_grads_list = grads_trident['layers'][0]['kernel'].flatten()
-                    else:
-                        trident_grads_list = trident_grads_list + grads_trident['layers'][0]['kernel'].flatten()
-
-                # average over the number of samples to get expected gradient
-                trident_grads_list = trident_grads_list/num_resamples
-
-                # print(f"Step {step} | TriDENT Gradients (resampled :5): {trident_grads_list[:5]}")
-                grads_trident = jnp.array(trident_grads_list)
-
-                grads_exact = compute_grads(model_trident_exact, train_inputs, train_labels)
-                # print(f"Step {step} | Exact Gradients (:5): {grads_exact['layers'][0]['kernel'].flatten().tolist()[:5]}")
-                grads_exact = grads_exact['layers'][0]['kernel'].flatten()
-
-                cosine_sim = jnp.dot(grads_trident, grads_exact) / (jnp.linalg.norm(grads_trident) * jnp.linalg.norm(grads_exact) + 1e-8)
-                # print(f"Step {step} | Cosine sim: {cosine_sim.item()}")
-
-                # append to the cosine similarity history
-                cosine_sims['step'].append(step)
-                cosine_sims['cosine_similarity'].append(cosine_sim.item())
-
-
-                ## compute the metrics
-                print(f"STEP {step}  | COSINE SIMILARITY: {cosine_sim.item():.4f}")
+            if step > 0 and (step%eval_every==0 or step == train_steps-1):
                 metrics_history_trident['step'].append(step)
                 metrics_history_exact['step'].append(step)
 
@@ -373,10 +384,6 @@ def train(
                 for metric, value in metrics_exact.compute().items():
                     metrics_history_exact[f"eval_{metric}"].append(value.item())
                 metrics_exact.reset()
-
-                # append accuracy to cosine similarity history
-                cosine_sims["inference_accuracy_trident"].append(metrics_history_trident['eval_accuracy'][-1])
-                cosine_sims["inference_accuracy_exact"].append(metrics_history_exact['eval_accuracy'][-1])
             
                 print(f"Step {step}/{train_steps} | Train Accuracy (Trident): {metrics_history_trident['train_accuracy'][-1]:.4f} | Eval Accuracy (Trident): {metrics_history_trident['eval_accuracy'][-1]:.4f} | Train Accuracy (Exact): {metrics_history_exact['train_accuracy'][-1]:.4f} | Eval Accuracy (Exact): {metrics_history_exact['eval_accuracy'][-1]:.4f}")
         
@@ -390,35 +397,24 @@ def train(
     # storing gradients
     if store_grads:
         if test_mode:
-            filename = f"TEST_gradients_accuracy_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl"
+            filename = f"TEST_gradients_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl"
         else:
             # filename = f"gradients_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl" # for raw gradients
-            filename = f"grads_cosine_similarity_accuracy_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl" #for cosine similarities
-
-        save_payload(state=gradients_history, configs=configs, filename=filename)
-
-    # storing cosine similarities
-    if store_cosine:
-        if test_mode:
-            filename = f"TEST_cosine_similarity_accuracy_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl"
-        else:
-            filename = f"cosine_similarity_accuracy_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl"
+            filename = f"grads_cosine_similarity_comparison_uci_iris_{today}_noise_{noise_std:.3f}.pkl" #for cosine similarities
 
             
-        save_payload(state=cosine_sims, configs=configs, filename=filename)
+        save_payload(state=gradients_history, configs=configs, filename=filename)
 
         # plotting the gradients
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-        ax[0].plot(cosine_sims['inference_accuracy_trident'], cosine_sims['cosine_similarity'], label='Trident Biased', alpha=0.5, lw=0, marker='o', markersize=3, color="C0")
-        ax[0].plot(cosine_sims['inference_accuracy_exact'], cosine_sims['cosine_similarity'], label='Exact Unbiased', alpha=0.5, lw=0, marker='o', markersize=3, color="C1")
-        ax[0].set_xlabel("Inference Accuracy")
-        ax[0].set_ylabel("Cosine Similarity")
-        ax[0].legend()
-        ax[1].hist(cosine_sims['cosine_similarity'], bins=10, alpha=0.7)
-        ax[1].set_xlabel("Cosine Similarity")
-        ax[1].set_ylabel("Frequency")
-        plt.tight_layout() 
-        plt.savefig(f"../plots/tmp_grads_comp_n_{noise_std:.3f}.png")
+        plt.figure(figsize=(6,6))
+        # plt.scatter(gradients_history['exact'], gradients_history['trident'], alpha=0.1)
+        plt.plot(cosine_sims['step'], cosine_sims['cosine_similarity'])
+        # plt.xlabel("Exact Gradients")
+        # plt.ylabel("Trident Gradients")
+        plt.xlabel("Training Step")
+        plt.ylabel("Cosine Similarity")
+        # plt.title(f"Gradient Comparison: Noise Std {noise_std:.3f}")
+        plt.savefig(f"tmp_grads_comp_n_{noise_std:.3f}.png")
         plt.show()
 
 
@@ -489,8 +485,7 @@ def main():
         configs=configs,
         checkpoint_flag=args.checkpoint,
         test_mode=args.test_mode,
-        store_grads=args.store_grads,
-        store_cosine=args.store_cosine
+        store_grads=args.store_grads
     )
 
     # IN TEST MODE as a test, print out contents of a saved model

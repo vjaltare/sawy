@@ -69,7 +69,7 @@ def dual_sample_ternary_exact_fwd(
 def dual_sample_ternary_exact_bwd(residuals, gradients):
     y, x, key, threshold, noise_std, noise_mean = residuals
 
-    dx = gradients * (2*jax.scipy.stats.norm.pdf(x=threshold, loc=x, scale=noise_std)) * (noise_std * jnp.sqrt(2*jnp.pi)/4)
+    dx = gradients * (2*jax.scipy.stats.norm.pdf(x=threshold, loc=x, scale=noise_std)) * (jnp.sqrt(2*jnp.pi)*noise_std/4)
 
     return (dx, None, None, None, None)
     
