@@ -6,6 +6,8 @@ Comparing theoretical vs approximate gradients for TriDENT.
 
 Notes:
 TODO
+- Store the gradient norm!
+- UPDATE: script is updated to include norms for trident and exact gradients
 """
 
 import os
@@ -322,7 +324,7 @@ def train(
                 trident_grads_list = None
 
                 # resample over same datum to compute expected gradient for trident 
-                for r in range(num_resamples): # TODO: not resampling helps! Remove this loop
+                for r in range(num_resamples): # TODO: not resampling helps! Remove this loop. Or only resample once
                     grads_trident = compute_grads(model_trident, train_inputs, train_labels)
                     if trident_grads_list is None:
                         trident_grads_list = grads_trident['layers'][0]['kernel'].flatten()
@@ -346,9 +348,16 @@ def train(
                 cosine_sims['step'].append(step)
                 cosine_sims['cosine_similarity'].append(cosine_sim.item())
 
+                # compute the gradient norms
+                trident_grad_norm = jnp.linalg.norm(grads_trident)
+                exact_grad_norm = jnp.linalg.norm(grads_exact)
+                cosine_sims['trident_grad_norm'].append(trident_grad_norm.item())
+                cosine_sims['exact_grad_norm'].append(exact_grad_norm.item())
+
 
                 ## compute the metrics
                 print(f"STEP {step}  | COSINE SIMILARITY: {cosine_sim.item():.4f}")
+                print(f"STEP {step}  | TRIDENT GRAD NORM: {trident_grad_norm.item():.4f} | EXACT GRAD NORM: {exact_grad_norm.item():.4f}")
                 metrics_history_trident['step'].append(step)
                 metrics_history_exact['step'].append(step)
 
