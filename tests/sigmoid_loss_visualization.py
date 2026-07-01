@@ -1,4 +1,8 @@
 """
+Visualize the loss landscape of the sigmoid network with filter-wise normalization
+"""
+
+"""
 Visualizing loss landscape of trained neural networks.
 - Based on the framework of Li et al. (NeurIPS 2017) -- Filter Normalization
 - Train TriDENT model (used one of the presaved models) and visualize the loss landscape and compare with that of a parameter matched sigmoid.
@@ -79,10 +83,9 @@ def save_data(
             'loss_surface': loss_surface
         }, f)
 
-
 # parse input arguments
 def parse_args():
-    parser = argparse.ArgumentParser(description="Noise-performance comparison on UCI-Iris")
+    parser = argparse.ArgumentParser(description="Visualizing loss landscape for sigmoid network trained on UCI Iris dataset")
 
     # number of resamples for each noise level
     # parser.add_argument("--num_resamples", type=int, default=45)
@@ -94,6 +97,27 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
 
     return parser.parse_args()
+
+## define call-signature matched sigmoid
+class Sigmoid(nnx.Module):
+    """
+    Sigmoidal activation with same call signature as TriDENT
+    """
+    def __init__(self,
+                 rngs: nnx.Rngs,
+                 threshold: float = 0.0,
+                 noise_std: float = 1.0,
+                 noise_mean: float = 0.0,
+                 ):
+        
+        self.rngs = rngs
+        self.threshold = threshold
+        self.noise_std = noise_std
+        self.noise_mean = noise_mean
+
+    def __call__(self, x):
+        x = nnx.sigmoid(x)
+        return x
 
 # loss function
 def loss_fn(
@@ -188,7 +212,6 @@ def compute_perturbed_state(
 
 # pipeline
 def generate_loss_surface(
-        raw_data,
         alphas: jax.Array,
         betas: jax.Array,
         data_features: jax.Array,
@@ -198,6 +221,8 @@ def generate_loss_surface(
     ):
 
     # load the model
+    raw_data = pickle.load(open(os.path.join(MODEL_PATH, "sigmoid_model_acc0.98_2026-06-30.pkl"), "rb"))
+
     clean_model_state = raw_data['state']
     model_data = raw_data['data']
     model_configs = raw_data['configs']
@@ -212,9 +237,9 @@ def generate_loss_surface(
 
     model = FFN(
         layers=model_configs['layers'],
-        noise_std=model_configs['noise_std'],
-        threshold=model_configs['threshold'],
-        activation=DualSampleTernary,
+        noise_std=None,
+        threshold=None,
+        ActivationFunction=Sigmoid,
         rngs=rngs
     )
 
@@ -266,11 +291,8 @@ def main():
     # load the UCI iris dataset
     _, X_test, _, y_test = load_uci_iris(normalize=True, key=args.seed, train_test_split=0.7)
 
-    raw_data = pickle.load(open(os.path.join(MODEL_PATH, "noise_perf_comp_uci_iris_2026-06-05_noise_0.010.pkl"), "rb"))
-
     # vmap over the alpha and beta grid to evaluate the loss surface
     loss_surface = generate_loss_surface(
-        raw_data=raw_data,
         alphas=alphas_,
         betas=betas_,
         data_features=X_test,
@@ -278,12 +300,12 @@ def main():
         seed=args.seed
     )
 
-    # save the data
+    # save the loss function values
     Alpha, Beta = jnp.meshgrid(alphas_, betas_)
     save_data(
         grid=[Alpha, Beta],
         loss_surface=loss_surface,
-        filename=f"loss_vis_trident_noise_{raw_data['configs']['noise_std']:.03f}_{today}.pkl"
+        filename=f"loss_vis_sigmoid_{today}.pkl"
     )
 
 
@@ -291,10 +313,12 @@ def main():
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.plot_surface(Alpha, Beta, loss_surface, cmap='viridis')
+    # plot a red dot at the origin (alpha=0, beta=0)
+    ax.scatter(0, 0, loss_surface[50, 50], color='red', s=50, zorder=10)
     ax.set_xlabel('Alpha')
     ax.set_ylabel('Beta')
     ax.set_zlabel('Loss')
-    plt.savefig(f"../plots/tmp_loss_surface_trident_noise_{raw_data['configs']['noise_std']:.03f}.png")
+    plt.savefig("../plots/tmp_loss_surface_sigmoid.png")
     plt.show()
 
 
