@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import flax
 from flax import nnx
-from FFN import FFN
+# from FFN import FFN
 from DualSampleTernary import DualSampleTernary
 import einops
 from typing import Callable

@@ -6,14 +6,14 @@ from .DualSampleTernaryExact import DualSampleTernaryExact
 from .FFN import FFN
 from .CustomLinear import CustomLinear
 from .TernarySigmoid import TernarySigmoid
-from .MLPMixer import MLPMixer
+# from .MLPMixer import MLPMixer
 
 __all__ = ['TridentMOELayer', 
            'TernaryStochasticActivation',
            'DualSampleTernary',
-            'DualSampleTernaryExact',
+           'DualSampleTernaryExact',
            'FFN',
            'CustomLinear',
            'TernarySigmoid',
-           'MLPMixer'
+        #    'MLPMixer'
            ]
