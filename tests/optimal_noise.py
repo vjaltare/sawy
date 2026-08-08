@@ -8,6 +8,9 @@ NOTE:
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
+# only if using cpu
+# os.environ["JAX_PLATFORMS"] = "cpu"
+
 import glob
 
 import argparse
@@ -394,13 +397,14 @@ def parameter_sweeps():
     # end points of uniform distribution
     # limits_uniform = jnp.arange(0.1, 1.5, 0.2)
     # limits_uniform = jnp.array([1e-2, 0.25, 0.5, 0.75, 1.0])
-    limits_uniform = jnp.logspace(-2., 0.0, 101, base=10)
+    # limits_uniform = jnp.logspace(-2., 0.0, 101, base=10)
 
     # STD for preactivations
     std_y_list = jnp.logspace(-4, 4, 100)
 
     print(f"Sigma sweep range: {sigmas}")
-    print(f"Uniform limits: {limits_uniform}")
+    print(f"Input STD sweep range: {std_y_list}")
+    # print(f"Uniform limits: {limits_uniform}")
 
     # activations
     activation_vals = jnp.array([-1., 0., 1.])
@@ -437,20 +441,20 @@ def parameter_sweeps():
             H_y = compute_marginal_entropy(density_y_normal, grid)
 
             # compute marginal entropy (H(y | A))
-            H_y_given_A = compute_H_y_given_A(P_A_given_y=P_A_given_y, density_y=density_y, P_A=P_A, grid=grid)
+            H_y_given_A = compute_H_y_given_A(P_A_given_y=P_A_given_y, density_y=density_y_normal, P_A=P_A, grid=grid)
 
             # compute MI
             mi = H_y - H_y_given_A
 
             # append results
             results['sigma'].append(s.item())
-            results['limit'].append(l.item())
+            results['limit'].append(sy.item())
             results['mi'].append(mi.item())
             results['H_y'].append(H_y.item())
             results['H_y_given_A'].append(H_y_given_A.item())
 
             # print out results: sigma, mi
-            print(f"STD = {s:.3f}, Limit = {l:.3f} -> MI = {mi:.4f} (nats)")
+            print(f"Noise STD = {s:.3f}, Input STD = {sy:.3f} -> MI = {mi:.4f} (nats)")
 
     return results
 
@@ -515,15 +519,15 @@ def main():
     if test_conditional_entropy_:
         test_conditional_entropy()
 
-    test_conditional_entropy_normal_ = True
+    test_conditional_entropy_normal_ = False
     if test_conditional_entropy_normal_:
         test_conditional_entropy_normal()
 
-    run_sweeps = False
+    run_sweeps = True
     if run_sweeps:
         today = date.today().isoformat()
         results = parameter_sweeps()
-        filename = f"optimal_noise_data_uniform_signal_{today}.pkl"
+        filename = f"optimal_noise_data_normal_signal_{today}.pkl"
         save_results(results, filename)
         plot_results(results)
 
