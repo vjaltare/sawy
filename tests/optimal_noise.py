@@ -2,6 +2,8 @@
 Optimal noise standard deviation that maximizes mutual information between preactivations and ternary representations.
 
 NOTE:
+- Separate the uniform and normal inputs into two functions.
+- Rerun over same/similar variance ranges!
 
 """
 
