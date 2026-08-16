@@ -57,6 +57,8 @@ def parse_args():
 
     parser.add_argument("--num_resamples", type=int, default=50, help="Number of resamples for each test")
     parser.add_argument("--int_window", type=int, default=2, help="Number of samples to average over. Need at least 2")
+    parser.add_argument("--num_classes", type=int, default=10, help="Number of classes or output neurons.")
+    parser.add_argument("--max_token_size", type=int, default=1024, help="Max length to sweep classes over.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for default rng stream") 
     parser.add_argument("--preactivation_scale", type=float, default=0.1, help="Scale of preactivation noise")
 
@@ -68,7 +70,46 @@ def parse_args():
     parser.add_argument("--logistic_noise", action="store_true", help="whether to use logistic noise")
     parser.add_argument("--save_results", action="store_true", help="whether to save the results")
 
+    parser.add_argument("--run_softmax_pipeline", action="store_true", help="run softmax pipeline")
+    parser.add_argument("--run_jacobian_pipeline", action="store_true", help="run jacobian pipeline")
+
     return parser.parse_args()
+
+## saving a file
+def save_payload(data, configs, filename, **kwargs):
+    """
+    Save model and parameters to a pickle.
+    state: nnx.Model state
+    configs: dict, configuration parameters.
+    data: dict, optional data from simulations 
+    """
+
+    # if data is None:
+    #     payload = {
+    #         'configs' : configs,
+    #         'state': state
+    #     }
+    # else:
+    #     payload = {
+    #         'configs' : configs,
+    #         'data': data,
+    #         'state': state
+    #     }
+
+    payload = {
+        'configs': configs,
+        'data': data
+    }
+
+    checkpoint_dir = "/local_disk/vikrant/trident/"
+    filename_ = os.path.join(checkpoint_dir, filename)
+
+    os.makedirs(os.path.dirname(filename_), exist_ok=True)  # Ensure the directory exists.
+
+    with open(filename_, 'wb') as f:
+        pickle.dump(payload, f)
+    
+    print(f"Model saved to {filename_}")
 
 
 # define jacobian for softmax
@@ -115,7 +156,7 @@ def norm_ratio(a: jax.Array, b: jax.Array):
     norm_b = jnp.linalg.norm(b)
     return norm_a / (norm_b + 1e-8)  # add small epsilon to avoid division by zero
 
-def resamples(z, key, nu, scale):
+def softmax_resamples(z, key, nu, scale, gauss_noise = True, logistic_noise = False):
     """
     z: jax.Array, preactivations to softmax layer, shape (C,)
     key: jax.random.PRNGKey, random key for sampling
@@ -125,20 +166,26 @@ def resamples(z, key, nu, scale):
 
 
     """
-    print(f"shape of input {z.shape}")
-    noise = jax.random.normal(key, shape=(nu, z.shape[-1]))*scale
-    print(f"shape of noise: {noise.shape}")
+    # print(f"shape of input {z.shape}")
+    if gauss_noise:
+        noise = jax.random.normal(key, shape=(nu, z.shape[-1]))*scale
+    elif logistic_noise:
+        noise = jax.random.logistic(key, shape=(nu, z.shape[-1]))*scale
+    else:
+        raise ValueError("Noise can be gaussian or logitic")
+    
+    # print(f"shape of noise: {noise.shape}")
     zn = z + noise
-    print(f"shape of noisy preact: {zn.shape}")
+    # print(f"shape of noisy preact: {zn.shape}")
     idx_max = jnp.argmax(zn, axis=-1)
-    print(f"id max shape: {idx_max.shape}")
+    # print(f"id max shape: {idx_max.shape}")
     z_one_hot = jax.nn.one_hot(idx_max, num_classes=z.shape[-1], axis=-1)
-    print(f"One hot shape: {z_one_hot.shape}")
+    # print(f"One hot shape: {z_one_hot.shape}")
     z_avg = jnp.average(z_one_hot, axis=0)
-    print(f"Z avg shape: {z_avg.shape} \n z_avg: {z_avg}")
+    # print(f"Z avg shape: {z_avg.shape} \n z_avg: {z_avg}")
 
     # for sanity check also print softmax of z
-    print(f"softmax(z) = {jax.nn.softmax(z)}")
+    # print(f"softmax(z) = {jax.nn.softmax(z)}")
 
     return z_avg
 
@@ -166,21 +213,151 @@ def jacobian_estimate(
 # ----------------------------------------
 # M/C Pipeline
 # ----------------------------------------
-def pipeline():
+def softmax_pipeline():
+    print("**"*50)
+    print("SOFTMAX PIPELINE")
+    print("**"*50)
+
+
     args = parse_args()
     rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000))
     rngs2 = nnx.Rngs(default=args.seed+2, key=int(args.seed + 2000))
 
+    data = defaultdict(list)
+
     # extract input arguments
     RESAMPLES = args.num_resamples
 
-    for r_idx in range(RESAMPLES):
+    # construct the array of number of classes
+    num_classes = jnp.logspace(1, jnp.log2(args.max_token_size), base=2, num=10, dtype=int)
 
-        # draw a preactivation sample
-        z = jax.random.normal(key=rngs1.key(), shape=args.int_window)*args.preactivation_scale
+    # integration window 
+    int_window_list = jnp.logspace(1, jnp.log2(args.int_window), base=2, num=10, dtype=int)
 
-        # softmax comparison: TODO
-        s = jax.nn.softmax(z, axis=-1)
+    for c in tqdm(num_classes, total=len(num_classes)):
+        print(f"Progress {c}/{len(num_classes)}")
+
+        for r_idx in range(RESAMPLES):
+            print(f"Resample# {r_idx}")
+
+            # draw a preactivation sample
+            z = jax.random.normal(key=rngs1.key(), shape=(c,))*args.preactivation_scale
+
+            # softmax comparison
+            s = jax.nn.softmax(z, axis=-1)
+
+            for nu in int_window_list:
+                print(f"Window: {nu}")
+                z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale)
+                cos_sim = cosine_similarity(a=z_avg, b=s)
+                norm_r = norm_ratio(a=z_avg, b=s) #Z/S
+                print(f"cosine_sim: {cos_sim.item():.2f}, norm_ratio: {norm_r.item():.2f}")
+
+                # append to the data file
+                data['cos_sim'].append(cos_sim.item())
+                data['norm_ratio'].append(norm_r.item())
+                data['num_classes'].append(c.item())
+                data['int_window'].append(nu.item())
+                data['resample'].append(r_idx)
+
+
+    if args.save_results:
+        configs = {
+            'resamples': args.num_resamples,
+            'num_classes': num_classes.tolist(),
+            'saved quantities': ['cosine sim', 'norm ratio (Z/S)', 'metadata...']
+        }
+
+        filename = f"softmax_mc_analysis_gauss_{today}.pkl"
+        save_payload(data=data, configs=configs, filename=filename)
+
+        print(data)
+
+
+def soft_jacobian_pipeline():
+    """
+    Pipeline for analyzing the estimated and true softmax jacobian.
+    """
+    print("**"*50)
+    print("SOFTMAX-JACOBIAN PIPELINE")
+    print("**"*50)
+
+    args = parse_args()
+    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000))
+    rngs2 = nnx.Rngs(default=args.seed+2, key=int(args.seed + 2000))
+
+    data = defaultdict(list)
+
+    # extract input arguments
+    RESAMPLES = args.num_resamples
+
+    # construct the array of number of classes
+    num_classes = jnp.logspace(1, jnp.log2(args.max_token_size), base=2, num=10, dtype=int)
+
+    # integration window 
+    int_window_list = jnp.logspace(1, jnp.log2(args.int_window), base=2, num=10, dtype=int)
+
+    # scale factor for jacobian estimate
+    scale_factor_list = jnp.arange(0.5, 3, 0.5)
+
+    for c_idx, c in tqdm(enumerate(num_classes), total=len(num_classes)):
+        print(f"Progress {c_idx}/{len(num_classes)}")
+
+        for r_idx in range(RESAMPLES):
+            print(f"Resample# {r_idx}")
+
+            # draw a preactivation sample
+            z = jax.random.normal(key=rngs1.key(), shape=(c,))*args.preactivation_scale
+
+            # softmax comparison
+            s = jax.nn.softmax(z, axis=-1)
+
+            # compute softmax jacobian
+            jacobian_exact = softmax_jacobian(s)
+            jacobian_exact_flat = jacobian_exact.reshape(-1,)
+
+            for nu in int_window_list:
+                print(f"Window: {nu}")
+
+                for scale_idx, sf in enumerate(scale_factor_list):
+                    print(f"Scale progress: {scale_idx}/{len(scale_factor_list)}")
+                    z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale)
+
+                    # compute the estimatex jacobian
+                    jacobian_est = jacobian_estimate(s=z_avg, scale_factor=sf)
+
+                    # flatten the estimated jacobian
+                    jacobian_est = jacobian_est.reshape(-1,)
+
+                    # compute cosine sim
+                    cos_sim = cosine_similarity(a=jacobian_est, b=jacobian_exact_flat)
+
+                    # compute norm ratio
+                    norm_r = norm_ratio(a=jacobian_est, b=jacobian_exact_flat) #J_hat/J
+
+                    print(f"cosine_sim: {cos_sim.item():.2f}, norm_ratio: {norm_r.item():.2f}")
+
+                    # append to the data file
+                    data['cos_sim'].append(cos_sim.item())
+                    data['norm_ratio'].append(norm_r.item())
+                    data['num_classes'].append(c.item())
+                    data['int_window'].append(nu.item())
+                    data['resample'].append(r_idx)
+                    data['scale_factor'].append(sf.item())
+
+
+    if args.save_results:
+        configs = {
+            'resamples': args.num_resamples,
+            'num_classes': num_classes.tolist(),
+            'saved quantities': ['cosine sim', 'norm ratio (Z/S)', 'metadata...']
+        }
+
+        filename = f"softmax_jacobian_mc_analysis_gauss_{today}.pkl"
+        save_payload(data=data, configs=configs, filename=filename)
+
+        print(data)
+
 
 
 
@@ -192,11 +369,21 @@ def pipeline():
 def main():
     args = parse_args()
 
-    averaging_test = True
+    jacobian_pipeline_test = args.run_jacobian_pipeline
+    if jacobian_pipeline_test:
+        soft_jacobian_pipeline()
+
+    softmax_pipeline_test = args.run_softmax_pipeline
+    if softmax_pipeline:
+        softmax_pipeline()
+
+
+
+    averaging_test = False
     if averaging_test:
         rngs = nnx.Rngs(default=0, key=345)
         x = jax.random.normal(rngs.key(), shape=(10,))*0.1
-        z = resamples(z=x, key=rngs.key(), nu=5, scale=0.1)
+        z = softmax_resamples(z=x, key=rngs.key(), nu=5, scale=0.1)
 
 
     jacobian_test = False
