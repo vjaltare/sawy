@@ -60,9 +60,9 @@ def parse_args():
     parser.add_argument("--num_classes", type=int, default=10, help="Number of classes or output neurons.")
     parser.add_argument("--max_token_size", type=int, default=1024, help="Max length to sweep classes over.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for default rng stream") 
-    parser.add_argument("--preactivation_scale", type=float, default=0.1, help="Scale of preactivation noise")
+    parser.add_argument("--preactivation_scale", type=float, default=1.0, help="Scale of preactivation noise") #  z/scale before passing it to softmax 
 
-    parser.add_argument("--scale", type=float, default=0.1, help="Noise scale parameter")
+    parser.add_argument("--scale", type=float, default=1.0, help="Noise scale parameter")
     parser.add_argument("--loc", type=float, default=0.0, help="Noise location parameter")
 
 
@@ -101,7 +101,7 @@ def save_payload(data, configs, filename, **kwargs):
         'data': data
     }
 
-    checkpoint_dir = "/local_disk/vikrant/trident/"
+    checkpoint_dir = "/local_disk/vikrant/trident/logs"
     filename_ = os.path.join(checkpoint_dir, filename)
 
     os.makedirs(os.path.dirname(filename_), exist_ok=True)  # Ensure the directory exists.
@@ -189,6 +189,39 @@ def softmax_resamples(z, key, nu, scale, gauss_noise = True, logistic_noise = Fa
 
     return z_avg
 
+def probit_infty(z, key, scale, nu_infty=None, gauss_noise = True, logistic_noise = False):
+    """
+    Generating probits for a large (infinite) averaging window.
+    """
+
+    nu_infty = nu_infty or max(int(5e4), 500*z.shape[-1])
+
+    # print(f"shape of input {z.shape}")
+    if gauss_noise:
+        noise = jax.random.normal(key, shape=(nu_infty, z.shape[-1]))*scale
+    elif logistic_noise:
+        noise = jax.random.logistic(key, shape=(nu_infty, z.shape[-1]))*scale
+    else:
+        raise ValueError("Noise can be gaussian or logitic")
+
+    
+    zn = z + noise
+    # print(f"shape of noisy preact: {zn.shape}")
+    idx_max = jnp.argmax(zn, axis=-1)
+    # print(f"id max shape: {idx_max.shape}")
+    z_one_hot = jax.nn.one_hot(idx_max, num_classes=z.shape[-1], axis=-1)
+    # print(f"One hot shape: {z_one_hot.shape}")
+    z_inf = jnp.average(z_one_hot, axis=0)
+    # print(f"Z avg shape: {z_avg.shape} \n z_avg: {z_avg}")
+
+    # for sanity check also print softmax of z
+    # print(f"softmax(z) = {jax.nn.softmax(z)}")
+
+    return z_inf
+
+    
+
+
 
 # ----------------------------------------
 # Jacobian for softmax approximation
@@ -220,10 +253,17 @@ def softmax_pipeline():
 
 
     args = parse_args()
-    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000))
+    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000)) # keep rng streams consistent across softmax and jacobian pipelines
     rngs2 = nnx.Rngs(default=args.seed+2, key=int(args.seed + 2000))
+    rngs3 = nnx.Rngs(default=args.seed+3, key=int(args.seed + 3000))
 
     data = defaultdict(list)
+
+    # pick the noise
+    noise_kws = dict(
+        gauss_noise = args.gaussian_noise,
+        logistic_noise = not args.gaussian_noise
+    )
 
     # extract input arguments
     RESAMPLES = args.num_resamples
@@ -243,19 +283,29 @@ def softmax_pipeline():
             # draw a preactivation sample
             z = jax.random.normal(key=rngs1.key(), shape=(c,))*args.preactivation_scale
 
-            # softmax comparison
-            s = jax.nn.softmax(z, axis=-1)
+            # softmax comparison: noise scaled
+            s = jax.nn.softmax(z/args.scale, axis=-1)
+
+            # compute probits
+            q = probit_infty(z=z, key=rngs3.key(), scale=args.scale, **noise_kws)
 
             for nu in int_window_list:
                 print(f"Window: {nu}")
-                z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale)
+                z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale, **noise_kws)
                 cos_sim = cosine_similarity(a=z_avg, b=s)
+                cos_sim_q = cosine_similarity(a=z_avg, b=q)
+                cos_sim_q_s = cosine_similarity(a=q, b=s)
                 norm_r = norm_ratio(a=z_avg, b=s) #Z/S
+                norm_r_q = norm_ratio(a=z_avg, b=q)
                 print(f"cosine_sim: {cos_sim.item():.2f}, norm_ratio: {norm_r.item():.2f}")
+                print(f"cosine_sim q-z: {cos_sim_q.item():.2f}")
 
                 # append to the data file
-                data['cos_sim'].append(cos_sim.item())
-                data['norm_ratio'].append(norm_r.item())
+                data['cos_sim_z_s'].append(cos_sim.item())
+                data['cos_sim_z_q'].append(cos_sim_q.item())
+                data['cos_sim_q_s'].append(cos_sim_q_s.item())
+                data['norm_ratio_z_s'].append(norm_r.item())
+                data['norm_ratio_z_q'].append(norm_r_q.item())
                 data['num_classes'].append(c.item())
                 data['int_window'].append(nu.item())
                 data['resample'].append(r_idx)
@@ -265,7 +315,8 @@ def softmax_pipeline():
         configs = {
             'resamples': args.num_resamples,
             'num_classes': num_classes.tolist(),
-            'saved quantities': ['cosine sim', 'norm ratio (Z/S)', 'metadata...']
+            'preact_scale': args.preactivation_scale,
+            'noise_scale': args.scale,
         }
 
         filename = f"softmax_mc_analysis_gauss_{today}.pkl"
@@ -283,10 +334,17 @@ def soft_jacobian_pipeline():
     print("**"*50)
 
     args = parse_args()
-    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000))
+    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000)) # keep rng streams consistent across softmax and jacobian pipelines
     rngs2 = nnx.Rngs(default=args.seed+2, key=int(args.seed + 2000))
+    rngs3 = nnx.Rngs(default=args.seed+3, key=int(args.seed + 3000))
 
     data = defaultdict(list)
+
+    # pick the noise
+    noise_kws = dict(
+        gauss_noise = args.gaussian_noise,
+        logistic_noise = not args.gaussian_noise
+    )
 
     # extract input arguments
     RESAMPLES = args.num_resamples
@@ -309,8 +367,11 @@ def soft_jacobian_pipeline():
             # draw a preactivation sample
             z = jax.random.normal(key=rngs1.key(), shape=(c,))*args.preactivation_scale
 
-            # softmax comparison
-            s = jax.nn.softmax(z, axis=-1)
+            # compute probits
+            q = probit_infty(z=z, key=rngs3.key(), scale=args.scale, **noise_kws)
+
+            # softmax comparison: noise scaled
+            s = jax.nn.softmax(z/args.scale, axis=-1)
 
             # compute softmax jacobian
             jacobian_exact = softmax_jacobian(s)
@@ -318,48 +379,66 @@ def soft_jacobian_pipeline():
 
             for nu in int_window_list:
                 print(f"Window: {nu}")
+                sf_theory = nu/(nu - 1)
+
+                # comparing z_avg with the same key across scale factors
+                z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale, **noise_kws)
 
                 for scale_idx, sf in enumerate(scale_factor_list):
                     print(f"Scale progress: {scale_idx}/{len(scale_factor_list)}")
-                    z_avg = softmax_resamples(z=z, key=rngs2.key(), nu=nu, scale=args.scale)
 
-                    # compute the estimatex jacobian
+                    # compute the estimated jacobian
                     jacobian_est = jacobian_estimate(s=z_avg, scale_factor=sf)
 
                     # flatten the estimated jacobian
                     jacobian_est = jacobian_est.reshape(-1,)
 
+                    # compute estimated jacobian for probits
+                    jacobian_q_est = jacobian_estimate(s=q, scale_factor=sf)
+                    jacobian_q_est = jacobian_q_est.reshape(-1,)
+
                     # compute cosine sim
                     cos_sim = cosine_similarity(a=jacobian_est, b=jacobian_exact_flat)
+
+                    # compute cosine sim against probits etimate
+                    cos_sim_q = cosine_similarity(a=jacobian_q_est, b=jacobian_exact_flat)
+
+                    # compute cosine sim between estimate and probits
+                    cos_sim_z_q = cosine_similarity(a=jacobian_est, b=jacobian_q_est)
 
                     # compute norm ratio
                     norm_r = norm_ratio(a=jacobian_est, b=jacobian_exact_flat) #J_hat/J
 
+                    norm_r_q = norm_ratio(a=jacobian_est, b=jacobian_q_est)
+
                     print(f"cosine_sim: {cos_sim.item():.2f}, norm_ratio: {norm_r.item():.2f}")
+                    print(f"cosine_sim q-z: {cos_sim_z_q.item():.2f}")
 
                     # append to the data file
-                    data['cos_sim'].append(cos_sim.item())
-                    data['norm_ratio'].append(norm_r.item())
+                    data['cos_sim_z_s'].append(cos_sim.item())
+                    data['cos_sim_q_s'].append(cos_sim_q.item())
+                    data['cos_sim_z_q'].append(cos_sim_z_q.item())
+                    data['norm_ratio_z_s'].append(norm_r.item())
+                    data['norm_ratio_z_q'].append(norm_r_q.item())
                     data['num_classes'].append(c.item())
                     data['int_window'].append(nu.item())
                     data['resample'].append(r_idx)
                     data['scale_factor'].append(sf.item())
+                    data['sf_theory'].append(sf_theory.item())
 
 
     if args.save_results:
         configs = {
-            'resamples': args.num_resamples,
-            'num_classes': num_classes.tolist(),
-            'saved quantities': ['cosine sim', 'norm ratio (Z/S)', 'metadata...']
-        }
+                    'resamples': args.num_resamples,
+                    'num_classes': num_classes.tolist(),
+                    'preact_scale': args.preactivation_scale,
+                    'noise_scale': args.scale,
+                }
 
         filename = f"softmax_jacobian_mc_analysis_gauss_{today}.pkl"
         save_payload(data=data, configs=configs, filename=filename)
 
         print(data)
-
-
-
 
 
 
@@ -374,7 +453,7 @@ def main():
         soft_jacobian_pipeline()
 
     softmax_pipeline_test = args.run_softmax_pipeline
-    if softmax_pipeline:
+    if softmax_pipeline_test:
         softmax_pipeline()
 
 
