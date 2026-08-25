@@ -7,6 +7,8 @@ from .dual_sample_ternary_exact import dual_sample_ternary_exact
 from .load_uci_iris import load_uci_iris
 from .dual_sample_binary_softmax import dual_sample_binary_softmax, dual_sample_ce_loss
 from .dual_sample_auxilary_functions import generate_gaussian_noise, generate_logistic_noise
+from .integrated_trident import integrated_trident
+from .integrated_softmax import integrated_softmax, integrated_ce_loss
 
 __all__ = ['trident', 
            'ternary_activation', 
@@ -17,5 +19,8 @@ __all__ = ['trident',
             'dual_sample_binary_softmax',
             'dual_sample_ce_loss',
             'generate_gaussian_noise',
-            'generate_logistic_noise'
+            'generate_logistic_noise',
+            'integrated_trident',
+            'integrated_softmax',
+            'integrated_ce_loss'
             ]
