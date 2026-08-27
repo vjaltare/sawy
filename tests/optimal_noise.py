@@ -2,11 +2,16 @@
 Optimal noise standard deviation that maximizes mutual information between preactivations and ternary representations.
 
 NOTE:
+- Separate the uniform and normal inputs into two functions.
+- Rerun over same/similar variance ranges!
 
 """
 
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
+# only if using cpu
+# os.environ["JAX_PLATFORMS"] = "cpu"
 
 import glob
 
@@ -192,6 +197,20 @@ def proba_y_uniform(
 
     return proba_cdf, density # temporarily adding density for checking
 
+# ----------------------------------- 
+# preactivation y ~ N(0, \sigma)
+# -----------------------------------
+def proba_y_normal(
+        y: float,
+        std: float,
+        mean: float = 0.0,
+    ):
+
+    density = jax.scipy.stats.norm.pdf(x=y, loc=mean, scale=std)
+    proba_cdf = jax.scipy.stats.norm.cdf(x=y, loc=mean, scale=std)
+
+    return proba_cdf, density # temporarily adding density for checking
+
 # --------------------------------------------- 
 # P(A = ai) | Marginalizing over preactivations
 # ---------------------------------------------
@@ -273,7 +292,7 @@ def test_conditional_entropy():
 
     ## also check if analytical H(y) is same as computed one
     H_y_computed = compute_marginal_entropy(density_y, grid)
-    print(f"Analytical H(y) = {jnp.log(l2 - l1):.4f}, Computed H(y) = {H_y_computed:.4f}")
+    print(f"Analytical (uniform) H(y) = {jnp.log(l2 - l1):.4f}, Computed H(y) = {H_y_computed:.4f}")
 
     # 2. P(A=a) sums to 1
     print(f"P(A) = {P_A}, sum = {jnp.sum(P_A):.4f}  (expect 1.0)")
@@ -305,6 +324,67 @@ def test_conditional_entropy():
         mi = jnp.log(l2-l1) - compute_H_y_given_A(P_A_given_y=P_Agy_s, density_y=density_y, P_A=P_A_s, grid=grid)
         print(f"  sigma={s:.3f} -> MI={mi:.4f}")
 
+
+def test_conditional_entropy_normal():
+    std_y = 0.5
+    std = 0.1
+    activation_vals = jnp.array([-1, 0, 1])
+    grid = jnp.linspace(-2, 2, 500)  # stay within support only
+
+    # Density (uniform)
+    _, density_y = jax.vmap(proba_y_normal, in_axes=(0, None, None))(grid, std_y, 0.0)
+
+    # P(A=a | ỹ): shape (3, N)
+    P_A_given_y = jnp.stack([
+        jax.vmap(proba_A_given_y, in_axes=(0, None, None, None))(grid, a, std, 0.0)
+        for a in [-1, 0, 1]
+    ])
+
+    # P(A=a): shape (3,) — marginalize over ỹ
+    P_A = jnp.trapezoid(P_A_given_y * density_y[None, :], grid, axis=1)
+
+    # --- Sanity checks ---
+    # 1. P(A=a|ỹ) sums to 1 at every grid point
+    row_sums = jnp.sum(P_A_given_y, axis=0)
+    print(f"P(A|ỹ) row sums — min: {row_sums.min():.4f}, max: {row_sums.max():.4f}  (expect all 1.0)")
+
+    ## also check if analytical H(y) is same as computed one
+    H_y_computed = compute_marginal_entropy(density_y, grid)
+    # print(f"Analytical (uniform) H(y) = {jnp.log(l2 - l1):.4f}, Computed H(y) = {H_y_computed:.4f}")
+    H_y_analytical = jnp.log(std_y*jnp.sqrt(2*jnp.pi* jnp.e))
+    print(f"Analytical (normal) H(y) = {H_y_analytical:.4f}, Computed H(y) = {H_y_computed:.4f}")
+
+    # 2. P(A=a) sums to 1
+    print(f"P(A) = {P_A}, sum = {jnp.sum(P_A):.4f}  (expect 1.0)")
+
+    # 3. Compute both conditional entropies
+    H_A_given_y = compute_H_A_given_y(P_A_given_y=P_A_given_y, density_y=density_y, grid=grid)
+    H_y_given_A = compute_H_y_given_A(P_A_given_y=P_A_given_y, density_y=density_y, P_A=P_A, grid=grid)
+    H_y = H_y_analytical
+
+    print(f"H(A | ỹ)  = {H_A_given_y:.4f}  (expect >= 0, <= log(3) = {jnp.log(3):.4f})")
+    print(f"H(ỹ | A)  = {H_y_given_A:.4f}  (expect <= H(ỹ) = {H_y:.4f})")
+
+    # 4. Both decompositions of MI should agree
+    MI_v1 = H_y - H_y_given_A
+    H_A = -jnp.sum(P_A * jnp.log(P_A + 1e-10))
+    MI_v2 = H_A - H_A_given_y
+    print(f"MI via H(ỹ) - H(ỹ|A) = {MI_v1:.4f}")
+    print(f"MI via H(A) - H(A|ỹ) = {MI_v2:.4f}  (both should match)")
+    print(f"MI >= 0: {MI_v1 >= 0} | MI <= H(ỹ): {MI_v1 <= H_y}")
+
+    # 5. Extreme sigma checks
+    print("\n--- Sigma sweep sanity ---")
+    for s in [1e-5, 0.1, 1e5]:
+        P_Agy_s = jnp.stack([
+            jax.vmap(proba_A_given_y, in_axes=(0, None, None, None))(grid, a, s, 0.0)
+            for a in [-1, 0, 1]
+        ])
+        P_A_s = jnp.trapezoid(P_Agy_s * density_y[None, :], grid, axis=1)
+        mi = H_y_analytical - compute_H_y_given_A(P_A_given_y=P_Agy_s, density_y=density_y, P_A=P_A_s, grid=grid)
+        print(f"  sigma={s:.3f} -> MI={mi:.4f}")
+
+
 # ----------------------------------- 
 # Sweeping Over sigma 
 # -----------------------------------
@@ -318,10 +398,15 @@ def parameter_sweeps():
 
     # end points of uniform distribution
     # limits_uniform = jnp.arange(0.1, 1.5, 0.2)
-    limits_uniform = jnp.array([1e-2, 0.25, 0.5, 0.75, 1.0])
+    # limits_uniform = jnp.array([1e-2, 0.25, 0.5, 0.75, 1.0])
+    # limits_uniform = jnp.logspace(-2., 0.0, 101, base=10)
+
+    # STD for preactivations
+    std_y_list = jnp.logspace(-4, 4, 100)
 
     print(f"Sigma sweep range: {sigmas}")
-    print(f"Uniform limits: {limits_uniform}")
+    print(f"Input STD sweep range: {std_y_list}")
+    # print(f"Uniform limits: {limits_uniform}")
 
     # activations
     activation_vals = jnp.array([-1., 0., 1.])
@@ -334,12 +419,15 @@ def parameter_sweeps():
 
     # looping over sigma and limits of the uniform distribution
     for s_idx, s in enumerate(sigmas):
-        for l_idx, l in enumerate(limits_uniform):
-            [l1, l2] = [-l, l]
-
+        # for l_idx, l in enumerate(limits_uniform): # TODO: this for loof may need to be modified for normal inputs!
+            # [l1, l2] = [-l, l]
             # uniform distribution of ỹ
             # Density (uniform)
-            cdf_y, density_y = jax.vmap(proba_y_uniform, in_axes=(0, None, None))(grid, l1, l2)
+            # cdf_y, density_y = jax.vmap(proba_y_uniform, in_axes=(0, None, None))(grid, l1, l2)
+        for sy_idx, sy in enumerate(std_y_list):
+
+            # density (normal)
+            cdf_y_normal, density_y_normal = jax.vmap(proba_y_normal, in_axes=(0, None, None))(grid, sy, 0.0)
 
             # P(A=a | ỹ): shape (3, N)
             P_A_given_y = jnp.stack([
@@ -348,26 +436,27 @@ def parameter_sweeps():
                 ])
             
             # P(A=a): shape (3,) — marginalize over ỹ
-            P_A = jnp.trapezoid(P_A_given_y * density_y[None, :], grid, axis=1)
+            P_A = jnp.trapezoid(P_A_given_y * density_y_normal[None, :], grid, axis=1)
 
             # compute marginal entropy of y
-            H_y = jnp.log(l2 - l1)
+            # H_y = jnp.log(l2 - l1)
+            H_y = compute_marginal_entropy(density_y_normal, grid)
 
             # compute marginal entropy (H(y | A))
-            H_y_given_A = compute_H_y_given_A(P_A_given_y=P_A_given_y, density_y=density_y, P_A=P_A, grid=grid)
+            H_y_given_A = compute_H_y_given_A(P_A_given_y=P_A_given_y, density_y=density_y_normal, P_A=P_A, grid=grid)
 
             # compute MI
             mi = H_y - H_y_given_A
 
             # append results
             results['sigma'].append(s.item())
-            results['limit'].append(l.item())
+            results['limit'].append(sy.item())
             results['mi'].append(mi.item())
             results['H_y'].append(H_y.item())
             results['H_y_given_A'].append(H_y_given_A.item())
 
             # print out results: sigma, mi
-            print(f"STD = {s:.3f}, Limit = {l:.3f} -> MI = {mi:.4f} (nats)")
+            print(f"Noise STD = {s:.3f}, Input STD = {sy:.3f} -> MI = {mi:.4f} (nats)")
 
     return results
 
@@ -432,11 +521,15 @@ def main():
     if test_conditional_entropy_:
         test_conditional_entropy()
 
+    test_conditional_entropy_normal_ = False
+    if test_conditional_entropy_normal_:
+        test_conditional_entropy_normal()
+
     run_sweeps = True
     if run_sweeps:
         today = date.today().isoformat()
         results = parameter_sweeps()
-        filename = f"optimal_noise_data_{today}.pkl"
+        filename = f"optimal_noise_data_normal_signal_{today}.pkl"
         save_results(results, filename)
         plot_results(results)
 
