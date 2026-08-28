@@ -45,5 +45,5 @@ def main():
     out = int_loss(x)
     print(f"Outputs: {out}")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

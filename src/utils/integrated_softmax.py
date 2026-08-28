@@ -35,6 +35,8 @@ def one_hot(x):
     s = jax.nn.one_hot(x=idx_max, num_classes=num_classes, axis=1)
     return s
 
+
+
 # -----------------------------------------
 # Noisy Hardmax
 # -----------------------------------------
@@ -55,6 +57,25 @@ def noisy_hardmax(
     return s_hat
 
 # -----------------------------------------
+# s_hat - crossentropy loss
+# -----------------------------------------
+def s_hat_ce_loss(x: jax.Array, # shape (B, C)
+                  noise_array: jax.Array, # shape (B, C, nu)
+                  labels: jax.Array, # shape (B, C)
+                  eps = 1e-8,
+                  ):
+    """
+    Implementing cross entropy loss with estimator of softmax s_hat
+    Computes: Li = sum(label(ij) * log s_hat(ij), dim=j) where j is the dimension of class
+    """
+
+    # compute the estimated softmax
+    s_hat = noisy_hardmax(x=x, noise_array=noise_array)
+
+    L = -jnp.sum(labels * jnp.log(s_hat + eps), axis=-1)
+    return L
+
+# -----------------------------------------
 # Estimated Jacobian
 # -----------------------------------------
 def estimated_jacobian(s_hat: jax.Array):
@@ -70,11 +91,13 @@ def estimated_jacobian(s_hat: jax.Array):
 def estimated_ce_loss(
         preactivations: jax.Array, # (B, C)
         labels: jax.Array, # (B, C), must be one hot!
+        noise_array: jax.Array,
         # logsumexp_factor: float = 1.0, # use this instead of the log term
     ):
 
     # L =  logsumexp_factor - jnp.einsum("...i, ...i -> ...", preactivations, labels) # analytical upper bound: jnp.log(jnp.exp(jnp.sum(preactivations, axis=-1)))
-    L = softmax_cross_entropy(logits=preactivations, labels=labels)
+    # L = softmax_cross_entropy(logits=preactivations, labels=labels)
+    L = s_hat_ce_loss(x=preactivations, labels=labels, noise_array=noise_array)
 
     return L
 
@@ -126,7 +149,7 @@ def integrated_ce_loss(
     labels: jax.Array, # must be one hot!
     ):
 
-    loss = estimated_ce_loss(preactivations=x, labels=labels)
+    loss = estimated_ce_loss(preactivations=x, labels=labels, noise_array=noise_array)
     return loss
 
 def _fwd_ce(
@@ -135,7 +158,7 @@ def _fwd_ce(
     labels: jax.Array, 
     ):
 
-    loss = estimated_ce_loss(preactivations=x, labels=labels)
+    loss = estimated_ce_loss(preactivations=x, labels=labels, noise_array=noise_array)
     return loss, (x, noise_array, labels)
 
 def _bwd_ce(cotangents, gradients):

@@ -6,6 +6,8 @@ from .DualSampleTernaryExact import DualSampleTernaryExact
 from .FFN import FFN
 from .CustomLinear import CustomLinear
 from .TernarySigmoid import TernarySigmoid
+from .IntegratedCELoss import IntegratedCELoss
+from .IntegratedTrident import IntegratedTrident
 # from .MLPMixer import MLPMixer
 
 __all__ = ['TridentMOELayer', 
@@ -15,5 +17,8 @@ __all__ = ['TridentMOELayer',
            'FFN',
            'CustomLinear',
            'TernarySigmoid',
+           'IntegratedCELoss',
+           'IntegratedTrident'
         #    'MLPMixer'
            ]
+

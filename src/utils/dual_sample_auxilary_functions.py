@@ -22,11 +22,11 @@ def generate_logistic_noise(
         shape: tuple,
         rngs: nnx.Rngs,
         std: float,
-        loc: float = 0.0
+        mean: float = 0.0
         
     ):
 
-    n = jax.random.logistic(key=rngs.key(), shape=shape)*std + loc
+    n = jax.random.logistic(key=rngs.key(), shape=shape)*std + mean
 
     return n
 
