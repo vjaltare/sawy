@@ -72,6 +72,7 @@ def parse_args():
 
     parser.add_argument("--run_softmax_pipeline", action="store_true", help="run softmax pipeline")
     parser.add_argument("--run_jacobian_pipeline", action="store_true", help="run jacobian pipeline")
+    parser.add_argument("--run_peakiness_pipeline", action="store_true", help="run jacobian pipeline")
 
     return parser.parse_args()
 
@@ -110,6 +111,15 @@ def save_payload(data, configs, filename, **kwargs):
         pickle.dump(payload, f)
     
     print(f"Model saved to {filename_}")
+
+
+def compute_entropy(
+        p: jax.Array, # pdf
+        eps = 1e-8
+    ):
+
+    H = -jnp.sum(p*jnp.log(p + eps))
+    return H
 
 
 # define jacobian for softmax
@@ -244,7 +254,7 @@ def jacobian_estimate(
     return jacobian
 
 # ----------------------------------------
-# M/C Pipeline
+# M/C Pipeline: Softmax
 # ----------------------------------------
 def softmax_pipeline():
     print("**"*50)
@@ -265,6 +275,10 @@ def softmax_pipeline():
         logistic_noise = not args.gaussian_noise
     )
 
+    noise_str = "gauss" if args.gaussian_noise else "logistic"
+        
+    print(f"NOISE DISTR: {noise_str}")
+
     # extract input arguments
     RESAMPLES = args.num_resamples
 
@@ -273,6 +287,9 @@ def softmax_pipeline():
 
     # integration window 
     int_window_list = jnp.logspace(1, jnp.log2(args.int_window), base=2, num=10, dtype=int)
+
+    print(f"NU: {int_window_list}")
+    print(f"Classes: {num_classes}")
 
     for c in tqdm(num_classes, total=len(num_classes)):
         print(f"Progress {c}/{len(num_classes)}")
@@ -319,12 +336,14 @@ def softmax_pipeline():
             'noise_scale': args.scale,
         }
 
-        filename = f"softmax_mc_analysis_gauss_{today}.pkl"
+        filename = f"softmax_mc_analysis_{noise_str}_{today}.pkl"
         save_payload(data=data, configs=configs, filename=filename)
 
         print(data)
 
-
+# ----------------------------------------
+# M/C Pipeline: Softmax-Jacobian
+# ----------------------------------------
 def soft_jacobian_pipeline():
     """
     Pipeline for analyzing the estimated and true softmax jacobian.
@@ -346,6 +365,10 @@ def soft_jacobian_pipeline():
         logistic_noise = not args.gaussian_noise
     )
 
+    noise_str = "gauss" if args.gaussian_noise else "logistic"
+    
+    print(f"NOISE DISTR: {noise_str}")
+
     # extract input arguments
     RESAMPLES = args.num_resamples
 
@@ -357,6 +380,9 @@ def soft_jacobian_pipeline():
 
     # scale factor for jacobian estimate
     scale_factor_list = jnp.arange(0.5, 3, 0.5)
+
+    print(f"NU: {int_window_list}")
+    print(f"Classes: {num_classes}")
 
     for c_idx, c in tqdm(enumerate(num_classes), total=len(num_classes)):
         print(f"Progress {c_idx}/{len(num_classes)}")
@@ -435,13 +461,101 @@ def soft_jacobian_pipeline():
                     'noise_scale': args.scale,
                 }
 
-        filename = f"softmax_jacobian_mc_analysis_gauss_{today}.pkl"
+        filename = f"softmax_jacobian_mc_analysis_{noise_str}_{today}.pkl"
         save_payload(data=data, configs=configs, filename=filename)
 
         print(data)
 
+# ----------------------------------------
+# Peakiness Pipeline: Softmax
+# ----------------------------------------
+def peakiness_pipeline():
+    """
+    Determine how "peaky" the estimator is compared to softmax
+    - Consider the entropy of the distribution H(J) = tr(J)
+    - Sample inputs zi
+    - Compute si = softmax(zi)
+    - Sweep over number of classes.
+    - Compute H(z)
+    - Repeat the above steps for the estimator. 
+    * Consider the probit (s_infty) version!
+
+    """
+
+    print("**"*50)
+    print("SOFTMAX-PEAKINESS PIPELINE")
+    print("**"*50)
+
+    args = parse_args()
+    rngs1 = nnx.Rngs(default=args.seed, key=int(args.seed + 1000)) # keep rng streams consistent across softmax and jacobian pipelines
+    rngs2 = nnx.Rngs(default=args.seed+2, key=int(args.seed + 2000))
+    # rngs3 = nnx.Rngs(default=args.seed+3, key=int(args.seed + 3000))
+
+    data = defaultdict(list)
+    
+    # pick the noise
+    noise_kws = dict(
+        gauss_noise = args.gaussian_noise,
+        logistic_noise = not args.gaussian_noise
+    )
+
+    noise_str = "gaussian" if args.gaussian_noise else "logistic"
+
+    print(f"NOISE DISTR: {noise_str}")
+
+    # extract input arguments
+    RESAMPLES = args.num_resamples
+
+    # construct the array of number of classes
+    num_classes = jnp.logspace(1, jnp.log2(args.max_token_size), base=2, num=50, dtype=int)
+
+    # LOOPING
+    for c_idx, c in tqdm(enumerate(num_classes), total=len(num_classes)):
+        for r in range(RESAMPLES):
+
+            # sample a preactivation
+            z = jax.random.normal(key=rngs1.key(), shape=(c,))*args.preactivation_scale
+
+            # compute the softmax
+            s = jax.nn.softmax(z)
+
+            # compute probits // int_window not needed
+            q = probit_infty(z=z, key=rngs2.key(), scale=args.scale, **noise_kws)
+
+            # compute entropy of softmax
+            Hs = compute_entropy(s)
+
+            # compute entropy of estimator
+            Hq = compute_entropy(q)
+
+            # compute entropy ratio Hq/Hs
+            Hq_s = jnp.divide(Hq, Hs)
+
+            # append to the data
+            data["Hq"].append(Hq.item())
+            data["Hs"].append(Hs.item())
+            data["Hq_s"].append(Hq_s.item())
+            data["num_classes"].append(c.item())
 
 
+    if args.save_results:
+        configs = {
+                    'resamples': args.num_resamples,
+                    'num_classes': num_classes.tolist(),
+                    'preact_scale': args.preactivation_scale,
+                    'noise_scale': args.scale,
+                    'noise_distr': noise_str,
+                }
+
+        filename = f"softmax_peakiness_analysis_{noise_str}_{today}.pkl"
+        save_payload(data=data, configs=configs, filename=filename)
+
+        print(data)
+
+    return data
+
+
+         
 
 
 ## Testing
@@ -457,12 +571,21 @@ def main():
         softmax_pipeline()
 
 
-
     averaging_test = False
     if averaging_test:
         rngs = nnx.Rngs(default=0, key=345)
         x = jax.random.normal(rngs.key(), shape=(10,))*0.1
         z = softmax_resamples(z=x, key=rngs.key(), nu=5, scale=0.1)
+
+    peakiness_test = args.run_peakiness_pipeline
+    if peakiness_test:
+        nstr = "gauss" if args.gaussian_noise else "log"
+        data = peakiness_pipeline()
+        fig, ax = plt.subplots(figsize=(5, 5))
+        sns.lineplot(data=data, x="num_classes", y="Hq_s")
+        ax.set_xlabel("No. Classes")
+        ax.set_ylabel("Entropy Ratio (Hq/ Hs)")
+        fig.savefig(f"../plots/peakiness_plot_{nstr}_softmax.png")
 
 
     jacobian_test = False
