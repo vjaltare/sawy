@@ -9,6 +9,7 @@ from .dual_sample_binary_softmax import dual_sample_binary_softmax, dual_sample_
 from .dual_sample_auxilary_functions import generate_gaussian_noise, generate_logistic_noise
 from .integrated_trident import integrated_trident
 from .integrated_softmax import integrated_softmax, integrated_ce_loss
+from .ying_yang_dataset import *
 
 __all__ = ['trident', 
            'ternary_activation', 

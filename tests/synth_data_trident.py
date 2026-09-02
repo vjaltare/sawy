@@ -130,6 +130,7 @@ def parse_args():
 
     # parser.add_argument("--run_softmax_pipeline", action="store_true", help="run softmax pipeline")
     # parser.add_argument("--run_jacobian_pipeline", action="store_true", help="run jacobian pipeline")
+    parser.add_argument("--run_test", action="store_true", help="run jacobian pipeline")
 
     return parser.parse_args()
 
@@ -924,6 +925,7 @@ def sweep_log_nu_std():
 # Testing
 # -------------------------------------------------
 def main():
+    args = parse_args()
     test_make_data = False
     if test_make_data:
         rngs = nnx.Rngs(default=0, key=1, input_key=2, params=3)
@@ -934,11 +936,11 @@ def main():
         X_train, X_test, labels_train, labels_test = make_synthetic_data(num_classes=num_classes, num_datapoints=num_datapoints, train_test_split=train_test_split, rngs=rngs, layer_sizes=layers, teacher_params_key=999)
         print(f"Input shape = {X_train.shape}")
 
-    test_train_script = False
+    test_train_script = args.run_test
     if test_train_script:
         metrics_history, model = test_train()
 
-    run_sweep_nu_std_gauss = True #TODO: rerun!
+    run_sweep_nu_std_gauss = False 
     if run_sweep_nu_std_gauss:
         data, configs = sweep_gauss_nu_std()
         filename = f"nu_std_sweep_gauss_synthetic_{today}.pkl"
